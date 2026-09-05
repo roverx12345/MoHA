@@ -12,6 +12,9 @@ from .models import Harness, digest
 def calibrated_profile(run):
     run = Path(run).resolve()
     names = ("manifest.json", "experiment.json", "checkpoint.json", "result.json", "frozen_harness.json")
+    missing = [name for name in names if not (run / name).is_file()]
+    if missing:
+        raise ValueError("calibration incomplete: missing " + ", ".join(missing))
     records = {name: json.loads((run / name).read_text()) for name in names}
     manifest, experiment, checkpoint, result, frozen = (records[n] for n in names)
     if manifest.get("schema") != "moha_run_v1" or frozen.get("schema") != "moha_frozen_v1":

@@ -57,6 +57,9 @@ class ProfileTests(unittest.TestCase):
         self.write("frozen_harness.json", frozen)
         with self.assertRaisesRegex(ValueError, "identity"):
             calibrated_profile(self.run)
+        (self.run / "frozen_harness.json").unlink()
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            calibrated_profile(self.run)
 
     def test_frozen_harness_must_follow_accepted_interventions(self):
         frozen = self.read("frozen_harness.json")
