@@ -159,6 +159,18 @@ class RuntimeTests(unittest.TestCase):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "run these integration tests in the Video OS environment")
 class WireTests(unittest.TestCase):
+    def test_text_boundary_keeps_video_metadata_in_actual_user_message(self):
+        from video_os.core.dispatch import sanitize_gpt_text_payload
+        from moha.evidence import messages_view, pack, unpack
+        content = json.dumps({"initial": {"media": {"duration_seconds": 132.655599,
+                             "has_audio": True}}, "task": {"question": "What happens last?"}})
+        messages = [{"role": "user", "content": content}]
+        payload = pack({"messages": messages_view(messages), "tool_result": {"artifact_id": "raw-media-handle"}})
+        sent = unpack(sanitize_gpt_text_payload(payload))
+        self.assertEqual(sent["messages"][0]["content"], content)
+        self.assertEqual(json.loads(sent["messages"][0]["content"])["initial"]["media"]["duration_seconds"], 132.655599)
+        self.assertNotIn("artifact_id", sent["tool_result"])
+
     def test_schema_reaches_real_adapter_wire_and_invalid_field_can_repair(self):
         from video_os.core.budget import BudgetContract
         from video_os.core.dispatch import ProviderRole

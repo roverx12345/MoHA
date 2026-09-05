@@ -61,12 +61,18 @@ def unpack(payload):
 
 
 def messages_view(messages):
-    """Decode JSON message bodies without deleting fields or merging variants."""
+    """Decode tool/assistant JSON; keep system and user messages as original text."""
     result = []
     for message in messages:
         value = copy.deepcopy(message)
         content = value.get("content")
         if isinstance(content, str):
+            # The text-only provider strips a top-level media key. The original
+            # user text can contain benign video metadata (duration, fps, size).
+            if value.get("role") in {"system", "user"}:
+                value["content_encoding"] = "text"
+                result.append(value)
+                continue
             try:
                 value["content"] = json.loads(content)
                 value["content_encoding"] = "decoded_json"

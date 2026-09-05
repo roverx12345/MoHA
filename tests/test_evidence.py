@@ -62,7 +62,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_non_json_messages_and_json_scalars_keep_their_meaning(self):
         texts = ['{"x":1}\n[Context note] Earlier history omitted.', 'null', '"literal"']
-        result = messages_view([{"role": "user", "content": t} for t in texts])
+        result = messages_view([{"role": "tool", "content": t} for t in texts])
         self.assertEqual(result[0]["content"], texts[0])
         self.assertEqual(result[0]["content_encoding"], "text")
         self.assertIsNone(result[1]["content"])
