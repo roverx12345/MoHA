@@ -15,9 +15,12 @@
 - Commit coherent changes before real model calls. Both this checkout and the
   pinned runtime must be clean. Record source/runtime commits, input/config hashes,
   provider identities, command, environment, and output location for every run.
-- Store actual configs, credentials, logs, checkpoints, and all run outputs outside
-  this repository. Never delete completed experiments to make the source look clean.
+- Store actual run configs, credentials, logs, checkpoints, and bulk run outputs
+  outside this repository. User-requested `calibrated/` holds only checked,
+  credential-free planner/observer profiles exported from completed calibrations;
+  keep one current profile per pair and its provenance. Never label an unfinished
+  run or a template as calibrated. Use Git history for older profiles.
+- Never delete completed experiments to make the source look clean.
 - Existing runs use their frozen source; do not edit their code or artifacts in place.
 - Verify with `PYTHONPATH=src:<runtime-root> python -m unittest discover -s tests -v`.
   Also run the pinned runtime's full test suite when integration changes warrant it.
-

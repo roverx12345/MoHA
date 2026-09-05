@@ -63,6 +63,28 @@ def text_client(config, budget, *, structured=False):
     return client_type(spec=spec, api_key=credential(config["key"]), budget=budget)
 
 
+def whisper_factory(config):
+    """Reuse the pinned runtime's bounded-audio transcription adapter."""
+    from video_os.core.dispatch import ProviderRole
+    from video_os.providers.client import ProviderSpec, WhisperTranscriptionAdapter
+    if set(config) - {"spec", "key", "language"} or not {"spec", "key"} <= set(config):
+        raise ValueError("ASR configuration requires spec, key, and optional language")
+    allowed = {"model", "base_url", "timeout_seconds", "retries"}
+    if set(config["spec"]) - allowed or not {"model", "base_url"} <= set(config["spec"]):
+        raise ValueError("ASR spec requires model/base_url and optional timeout_seconds/retries")
+    language = config.get("language")
+    if language is not None and (not isinstance(language, str) or not language.strip()):
+        raise ValueError("ASR language must be a nonempty language code or null for automatic detection")
+    spec = ProviderSpec(role=ProviderRole.MULTIMODAL_SENSOR, response_format_mode="json_text",
+        max_completion_tokens=None, require_usage=False, **{"retries": 0, **config["spec"]})
+    key = credential(config["key"])
+
+    def create(artifact_root, schemas, budget):
+        return WhisperTranscriptionAdapter(spec=spec, api_key=key, budget=budget,
+            artifact_root=artifact_root, schemas=schemas, default_language=language)
+    return create
+
+
 class TextRoleClient:
     def __init__(self, adapter):
         self.adapter = adapter
@@ -119,7 +141,7 @@ def _snapshot(repo, directories, names):
     files = {}
     for directory in directories:
         for path in sorted((repo / directory).rglob("*")):
-            if path.is_file() and path.suffix in {".py", ".json", ".md", ".txt"} and "__pycache__" not in path.parts:
+            if path.is_file() and path.suffix in {".py", ".json", ".md", ".txt", ".sh"} and "__pycache__" not in path.parts:
                 files[str(path.relative_to(repo))] = hashlib.sha256(path.read_bytes()).hexdigest()
     for name in names:
         path = repo / name
@@ -138,7 +160,7 @@ def _snapshot(repo, directories, names):
 
 
 def source_identity(repo):
-    return _snapshot(repo, ("src/moha",), ("pyproject.toml", "AGENTS.md", "README.md", "config.example.json"))
+    return _snapshot(repo, ("src/moha", "scripts"), ("pyproject.toml", "AGENTS.md", "README.md", "config.example.json"))
 
 
 def activate_runtime(reference):
@@ -161,7 +183,7 @@ def activate_runtime(reference):
 def prepare(config_path, repo):
     config = read_object(config_path)
     required = {"schema", "runtime", "media_root", "calibration_manifest", "validation_manifest", "budget", "models", "observer"}
-    allowed = required | {"initial", "search", "validation", "specialists", "image", "retrieval_extension"}
+    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension"}
     if required - set(config) or set(config) - allowed or config["schema"] != "moha_config_v1":
         raise ValueError("unknown or missing MOHA configuration fields/schema")
     runtime_root = activate_runtime(config["runtime"])
@@ -178,6 +200,8 @@ def prepare(config_path, repo):
         raise ValueError("specialists must list supported, unique capabilities")
     if "ocr" in specialists and "image" not in config:
         raise ValueError("OCR requires an explicitly configured image backend")
+    if "asr" in specialists and "asr" not in config:
+        raise ValueError("ASR requires an explicitly configured Whisper backend")
     observer_keys = {"backend", "model", "base_url", "key", "timeout_seconds", "retries"}
     if set(config["observer"]) - observer_keys or not {"backend", "model", "base_url", "key"} <= set(config["observer"]):
         raise ValueError("unknown or missing observer configuration fields")
@@ -195,6 +219,8 @@ def prepare(config_path, repo):
         if set(config["image"].get("spec", {})) - allowed_image:
             raise ValueError("image spec contains fields the shared image service cannot apply")
         text_client(config["image"], budget)  # Validate the endpoint/key without calling it.
+    if "asr" in config:
+        whisper_factory(config["asr"])  # Validate the transcription contract without calling it.
     calibration, assets, left = load_split(config["calibration_manifest"], config["media_root"], "calibration")
     validation_samples, right_assets, right = load_split(config["validation_manifest"], config["media_root"], "validation")
     check_splits(calibration, validation_samples)
@@ -216,7 +242,7 @@ def prepare(config_path, repo):
 def build(prepared, store):
     from video_os.providers.core import AssetCatalog, VideoOSPerceptionService, PERCEPTION_PROTOCOL
     config, observer = prepared["config"], prepared["config"]["observer"]
-    image = config.get("image")
+    image, asr = config.get("image"), config.get("asr")
     image_kwargs = {}
     if image:
         spec = image["spec"]
@@ -228,14 +254,19 @@ def build(prepared, store):
     service = VideoOSPerceptionService(
         catalog=AssetCatalog(prepared["assets"], allowed_roots=[config["media_root"]]),
         output_root=store.root / "perception_sessions", perception_model=observer["model"],
-        perception_backend=observer["backend"], asr_backend=observer["backend"],
+        perception_backend=observer["backend"], asr_backend="whisper" if asr else observer["backend"],
         perception_api_key=credential(observer["key"]), base_url=observer["base_url"],
         provider_timeout_seconds=observer.get("timeout_seconds", 300),
         provider_retries=observer.get("retries", 0), budget=prepared["budget"], protocol=PERCEPTION_PROTOCOL,
-        **image_kwargs)
+        whisper_backend_factory=whisper_factory(asr) if asr else None, **image_kwargs)
+    # The shared specialist receipt reads these identities from its service.
+    if image:
+        service.ocr_perception_model = image["spec"]["model"]
+    if asr:
+        service.asr_perception_model = asr["spec"]["model"]
     clients = prepared["clients"]
     runner = EpisodeRunner(service, clients["planner"], extractor=clients.get("extractor"),
-                           asr_backend=observer["backend"], store=store)
+                           asr_backend="whisper" if asr else observer["backend"], store=store)
     judge_client = TextRoleClient(clients["judge"])
     selector_client = TextRoleClient(clients.get("selector", clients["judge"]))
     return Calibrator(runner=runner, judge=Judge(judge_client), selector=Selector(selector_client),

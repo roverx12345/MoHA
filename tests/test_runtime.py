@@ -205,6 +205,9 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.config = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
+        self.config["specialists"] = []
+        self.config.pop("image", None)
+        self.config.pop("asr", None)
         self.config["media_root"] = str(self.root)
         for role in ("planner", "judge"):
             self.config["models"][role]["key"] = {"local": True}
@@ -254,6 +257,42 @@ class BridgeTests(unittest.TestCase):
         self.config["specialists"] = ["ocr"]
         self.save()
         with self.assertRaisesRegex(ValueError, "OCR requires"):
+            self.prepare()
+        self.config["specialists"] = ["asr"]
+        self.save()
+        with self.assertRaisesRegex(ValueError, "ASR requires"):
+            self.prepare()
+
+    def test_specialists_build_separate_models_and_keep_shared_initial_harness(self):
+        from moha.bridge import build
+        from moha.store import RunStore
+        template = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
+        for field in ("specialists", "image", "asr"):
+            self.config[field] = template[field]
+        self.config["image"]["key"] = {"local": True}
+        self.save()
+        prepared = self.prepare()
+        self.assertEqual(prepared["initial"].specialists, ())
+        self.assertIn("observer.specialist.ocr", prepared["allowed_ids"])
+        self.assertIn("observer.specialist.asr", prepared["allowed_ids"])
+        with RunStore(self.root / "specialists-run", prepared["identity"]) as store:
+            with patch("urllib.request.urlopen", side_effect=AssertionError("no model calls during build")):
+                runner = build(prepared, store).runner
+                self.assertEqual(runner.asr_backend, "whisper")
+                self.assertEqual(runner.service.asr_perception_model, "whisper-large-v3-turbo")
+                self.assertEqual(runner.service.ocr_perception_model, "Qwen/Qwen3.5-4B")
+                self.assertEqual(runner.service.image_base_url, "https://api2.aigcbest.top/v1")
+                from video_os.core.schema import SchemaRegistry
+                adapter = runner.service.whisper_backend_factory(self.root, SchemaRegistry(), prepared["budget"])
+                self.assertIsNone(adapter.default_language)
+                self.assertEqual(adapter.endpoint(), "http://127.0.0.1:8093/v1/audio/transcriptions")
+
+    def test_asr_rejects_chat_options_that_the_transcription_adapter_cannot_apply(self):
+        template = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
+        self.config["asr"] = template["asr"]
+        self.config["asr"]["spec"]["max_completion_tokens"] = 100
+        self.save()
+        with self.assertRaisesRegex(ValueError, "ASR spec"):
             self.prepare()
 
     def test_shared_start_cannot_be_silently_replaced(self):

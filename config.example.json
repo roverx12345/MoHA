@@ -77,7 +77,28 @@
     "timeout_seconds": 600,
     "retries": 0
   },
-  "specialists": [],
+  "specialists": ["ocr", "asr"],
+  "image": {
+    "spec": {
+      "model": "Qwen/Qwen3.5-4B",
+      "base_url": "https://api2.aigcbest.top/v1",
+      "timeout_seconds": 300,
+      "retries": 0,
+      "max_completion_tokens": 3072,
+      "enable_thinking": false
+    },
+    "key": {"env": "MOHA_OCR_API_KEY"}
+  },
+  "asr": {
+    "spec": {
+      "model": "whisper-large-v3-turbo",
+      "base_url": "http://127.0.0.1:8093/v1",
+      "timeout_seconds": 300,
+      "retries": 0
+    },
+    "key": {"local": true},
+    "language": null
+  },
   "retrieval_extension": false,
   "runtime": {
     "root": "/home/jianghan/video_os_runs/moha_gpt55_216_boundaryfix_20260905_164146/source",

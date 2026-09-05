@@ -6,6 +6,8 @@
 moha/
   src/moha/          运行、诊断、选择与校准逻辑
   tests/             单元与集成测试
+  calibrated/        已完成校准的模型组合，一组一个当前配置
+  scripts/           本地 Whisper 启动入口
   config.example.json
   pyproject.toml
   README.md
@@ -44,6 +46,18 @@ PYTHONPATH=src python -m moha demo --output /tmp/moha-demo
 
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
+模板中的 `specialists: ["ocr", "asr"]` 让两种 specialist 成为校准候选，H0 的 `harness.specialists` 仍为空。只有对应能力的 observer 失败经过执行设置 probe 后得到 `no_rescue`，selector 才能提出该 specialist；最终是否保留仍由独立验证决定。只配置模型不代表已经校准或启用。
+
+OCR 通过 QDD 的 `Qwen/Qwen3.5-4B` 执行，`image.key` 引用已有凭据。ASR 使用本地 `whisper-large-v3-turbo` 的转写接口；`asr.language: null` 表示自动识别语言。两者复用固定 VideoOS 的媒体与模型适配器，receipt 分别记录真实 specialist 模型名。缺少后端配置时不能把对应 specialist 加入候选。
+
+检查 GPU 空余显存后，可在仓库根目录启动 Whisper；日志目录必须在仓库外：
+
+```bash
+MOHA_WHISPER_GPU=1 bash scripts/serve_whisper.sh > /path/outside/repo/whisper.log 2>&1
+```
+
+默认复用已有权重与 vLLM 环境，监听 `127.0.0.1:8093`，最多并发两条请求，显存比例设为 0.08。GPU、端口、vLLM 路径和权重路径可通过脚本中列出的 `MOHA_WHISPER_*` 环境变量指定。
+
 校准 trace 用于诊断和提案。Selector 每次只能选择一个合法候选或放弃；独立的视频级验证集决定是否保留修改。Observer probe 仅在校准期间执行，固定窗口、目标和 observer，测试有界执行设置变化。无可靠证据时保留 `unresolved`；预算耗尽本身不证明某项语义失败。
 
 ## Judge 与 selector 的证据
@@ -71,6 +85,8 @@ PYTHONPATH=src python -m moha evaluate --config /path/config.json \
   --frozen /path/calibration-run/frozen_harness.json \
   --manifest /path/test_manifest.json --output /path/test-run
 ```
+
+完成校准后，运行 `PYTHONPATH=src python -m moha export --run /path/calibration-run --output calibrated`，将通过身份、完成状态和接受历史核验的模型组合登记到 `calibrated/`。每组保留一个当前 JSON，历史由 Git 管理。配置含冻结 harness、模型规格、预算和来源，不含密钥或逐样本标签。它是校准结果档案；复现实验仍使用来源运行的固定源码和配置。
 
 ## 测试
 

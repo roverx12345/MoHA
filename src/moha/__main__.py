@@ -25,8 +25,14 @@ def main(argv=None):
     demo = commands.add_parser("demo")
     demo.add_argument("--output", required=True, type=Path)
     demo.add_argument("--resume", action="store_true")
+    export = commands.add_parser("export", help="Record a completed planner/observer calibration without credentials")
+    export.add_argument("--run", required=True, type=Path)
+    export.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
-    if args.command == "demo":
+    if args.command == "export":
+        from .profiles import export_profile
+        result = export_profile(args.run, args.output)
+    elif args.command == "demo":
         from .demo import run_demo
         result = run_demo(args.output, args.resume)
     else:
@@ -40,6 +46,9 @@ def main(argv=None):
                       "calibration_samples": len(prepared["calibration"]),
                       "validation_samples": len(prepared["validation"]),
                       "available_catalog": prepared["allowed_ids"], "model_calls": 0,
+                      "configured_specialists": {
+                          "ocr": prepared["config"]["image"]["spec"]["model"] if "ocr" in prepared["config"].get("specialists", []) else None,
+                          "asr": prepared["config"]["asr"]["spec"]["model"] if "asr" in prepared["config"].get("specialists", []) else None},
                       "source_hash": prepared["identity"]["source"]["source_hash"],
                       "note": "Configuration, imports, credential availability and video hashes checked; endpoint health is not measured."}
         else:
