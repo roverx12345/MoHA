@@ -1,0 +1,223 @@
+import copy
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from moha.catalog import catalog
+from moha.demo import DemoJudge, DemoRunner, DemoSelector, sample, run_demo
+from moha.evaluate import checked, compare
+from moha.loop import Calibrator, SearchPolicy
+from moha.models import Episode, Harness, ValidationPolicy, check_splits
+from moha.records import usage_from
+from moha.store import RunStore
+
+
+class ContractTests(unittest.TestCase):
+    def test_shared_start_and_roundtrip(self):
+        base = Harness()
+        self.assertFalse(any((base.overview, base.memory, base.verification, base.retrieval_guard, base.specialists)))
+        self.assertEqual(Harness.from_dict(base.to_dict()), base)
+        self.assertEqual(base.id, Harness.from_dict(base.to_dict()).id)
+
+    def test_invalid_values(self):
+        for kwargs in ({"max_steps": True}, {"history_tokens": 0}, {"memory": 1}, {"specialists": ("count",)},
+                       {"execution": (("text", "default"),)}, {"execution": (("default", "oops"),)}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                Harness(**kwargs)
+        for kwargs in ({"repeats": 0}, {"min_gain": float("nan")}, {"max_cost_ratio": float("inf")}, {"require_positive_interval": 1}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                ValidationPolicy(**kwargs)
+
+    def test_video_split_not_question_split(self):
+        with self.assertRaises(ValueError):
+            check_splits([sample("one")], [replace(sample("two"), video_id="one")])
+        with self.assertRaises(ValueError):
+            check_splits([sample("one")], [sample("one")])
+        with self.assertRaises(ValueError):
+            replace(sample("one"), video_id=None)
+
+    def test_catalog_is_one_coordinate_and_runnable_data(self):
+        base = Harness()
+        for item in catalog().values():
+            changed = item.apply(base).to_dict()
+            self.assertLessEqual(sum(changed[k] != v for k, v in base.to_dict().items()), 1)
+
+    def test_noop_pixel_limit_and_inherited_preset(self):
+        high = catalog()["observer.execution.text.high_resolution"]
+        self.assertFalse(high.available(Harness(), 384**2))
+        self.assertTrue(high.available(Harness(), 768**2))
+        inherited = Harness(execution=(("default", "high_resolution"),))
+        self.assertFalse(high.available(inherited))
+        self.assertTrue(catalog()["observer.execution.sequence.dense_temporal"].available(Harness(), 384**2))
+
+
+class AccountingTests(unittest.TestCase):
+    def test_receipts_are_deduplicated_but_session_ledger_not_multiplied(self):
+        receipt = {"receipt_id": "r1", "usage": {"sampled_frames": 10}}
+        result = {"observer_execution_receipt": receipt, "backend_result": {"observer_execution_receipt": receipt}}
+        events = [{"kind": "tool_result", "tool": "video_player_observe", "result": result}, {"kind": "planner"}]
+        usage = usage_from(events, {"budget_ledger": {"frames_used": 12, "video_tokens_used": 512, "look_used": 2}})
+        self.assertEqual(usage["observer_calls"], 1)
+        self.assertEqual(usage["sampled_frames"], 12)
+        self.assertEqual(usage["video_tokens"], 512)
+        self.assertEqual(usage["sensory_looks"], 2)
+
+    def test_missing_cost_is_unknown(self):
+        usage = usage_from([{"kind": "tool_result", "tool": "video_player_observe", "result": {}}], None)
+        self.assertIsNone(usage["observer_calls"])
+        self.assertIsNone(usage["video_tokens"])
+
+    def test_conflicting_receipts_fail(self):
+        with self.assertRaises(ValueError):
+            usage_from([{"kind": "tool_result", "result": {
+                "observer_execution_receipt": {"receipt_id": "x"},
+                "nested": {"observer_execution_receipt": {"receipt_id": "x", "usage": {"sampled_frames": 5}}}}}], None)
+
+
+class ValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.samples = [sample(f"val{i}") for i in range(8)]
+        self.old, self.new = Harness(), Harness(overview=True)
+
+    def runs(self, harness, answers, costs=100, repeats=1):
+        return [[Episode(s.sample_id, s.id, harness.id, r, list(s.video_key), s.expected_answer,
+                         answers[r][i] if repeats > 1 else answers[i], "completed", usage={"video_tokens": costs})
+                 for i, s in enumerate(self.samples)] for r in range(repeats)]
+
+    def test_paper_gate_strict_margin_and_matched_cap_not_same_spend(self):
+        old = self.runs(self.old, ["B"] * 8)
+        new = self.runs(self.new, ["A"] * 8, 200)
+        self.assertTrue(compare(old, new, self.samples, self.old, self.new, ValidationPolicy())['accepted'])
+        self.assertFalse(compare(old, new, self.samples, self.old, self.new, ValidationPolicy(min_gain=1))['accepted'])
+        self.assertEqual(compare(old, new, self.samples, self.old, self.new, ValidationPolicy(max_cost_ratio=1))['reason'], 'cost_limit')
+
+    def test_complete_pair_identity_is_required(self):
+        data = self.runs(self.old, ["B"] * 8)[0]
+        for mutated in (data[:-1], data + [data[0]], [replace(data[0], expected_answer="B")] + data[1:],
+                        [replace(data[0], harness_id=self.new.id)] + data[1:], [replace(data[0], repeat=2)] + data[1:],
+                        [replace(data[0], status="error")] + data[1:]):
+            with self.subTest(mutated=mutated[0].sample_id), self.assertRaises(ValueError):
+                checked(mutated, self.samples, self.old, 0)
+
+    def test_missing_cost_cannot_promote(self):
+        old, new = self.runs(self.old, ["B"] * 8), self.runs(self.new, ["A"] * 8)
+        new[0][0].usage = {}
+        self.assertEqual(compare(old, new, self.samples, self.old, self.new, ValidationPolicy())["reason"], "missing_measured_cost")
+
+    def test_optional_repeats_gate_detects_regression(self):
+        old = self.runs(self.old, [["A"] * 8, ["B"] * 8, ["B"] * 8], repeats=3)
+        new = self.runs(self.new, [["B"] * 8, ["A"] * 8, ["A"] * 8], repeats=3)
+        policy = ValidationPolicy(repeats=3, require_each_repeat_nonnegative=True)
+        verdict = compare(old, new, self.samples, self.old, self.new, policy)
+        self.assertEqual(verdict["reason"], "inconsistent_repeats")
+        self.assertEqual(verdict["paired"]["wrong_to_correct"], 16)
+        self.assertEqual(verdict["paired"]["correct_to_wrong"], 8)
+
+    def test_optional_confidence_gate(self):
+        old, new = self.runs(self.old, ["B"] * 8), self.runs(self.new, ["A"] + ["B"] * 7)
+        result = compare(old, new, self.samples, self.old, self.new, ValidationPolicy(require_positive_interval=True))
+        self.assertEqual(result["reason"], "uncertain_gain")
+
+
+class StoreAndLoopTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "run"
+
+    def loop(self, store, **kwargs):
+        params = dict(runner=DemoRunner(), judge=DemoJudge(), selector=DemoSelector(), store=store,
+                      calibration=[sample("cal")], validation=[sample("val")],
+                      validation_policy=ValidationPolicy(bootstrap_samples=30))
+        params.update(kwargs)
+        return Calibrator(**params)
+
+    def test_run_is_exclusive_immutable_and_identity_bound(self):
+        with RunStore(self.root, {"source": 1}) as store:
+            store.write("x.json", {"v": 1}, immutable=True)
+            with self.assertRaises(ValueError):
+                store.write("x.json", {"v": 2}, immutable=True)
+            with self.assertRaises(ValueError):
+                store.write("../outside.json", {})
+            with self.assertRaises(BlockingIOError):
+                RunStore(self.root, {"source": 1}, resume=True)
+        with self.assertRaises(ValueError):
+            RunStore(self.root, {"source": 2}, resume=True)
+
+    def test_demo_end_to_end_and_completed_resume(self):
+        result = run_demo(self.root)
+        self.assertTrue(result["harness"]["overview"])
+        self.assertEqual(len(result["history"]), 1)
+        self.assertEqual(run_demo(self.root, resume=True), result)
+        self.assertTrue((self.root / "frozen_harness.json").is_file())
+
+    def test_episode_interrupt_resume_reuses_completed_samples(self):
+        class Interrupted(DemoRunner):
+            calls = []
+            fail = True
+            def run(runner, harness, s, repeat):
+                runner.calls.append((s.sample_id, harness.id))
+                if s.sample_id == "val" and harness.overview and runner.fail:
+                    runner.fail = False
+                    raise RuntimeError("synthetic interruption")
+                return super().run(harness, s, repeat)
+        runner = Interrupted()
+        with RunStore(self.root, {}) as store:
+            with self.assertRaises(RuntimeError):
+                self.loop(store, runner=runner).run()
+        with RunStore(self.root, {}, resume=True) as store:
+            result = self.loop(store, runner=runner).run()
+        self.assertEqual(runner.calls.count(("val", Harness().id)), 1)
+        self.assertEqual(runner.calls.count(("val", Harness(overview=True).id)), 2)
+        self.assertTrue(result["history"][0]["validation"]["accepted"])
+
+    def test_failed_selection_does_not_poison_immutable_resume_slot(self):
+        class OnceBad(DemoSelector):
+            bad = True
+            def select(selector, *args):
+                if selector.bad:
+                    selector.bad = False
+                    return {"status": "error"}
+                return super().select(*args)
+        selector = OnceBad()
+        with RunStore(self.root, {}) as store:
+            with self.assertRaises(RuntimeError):
+                self.loop(store, selector=selector).run()
+        with RunStore(self.root, {}, resume=True) as store:
+            self.assertEqual(self.loop(store, selector=selector).run()["status"], "completed")
+
+    def test_invalid_diagnoses_stop_before_validation(self):
+        class Invalid:
+            def diagnose(self, _):
+                return {"status": "error"}
+        with RunStore(self.root, {}) as store:
+            with self.assertRaises(RuntimeError):
+                self.loop(store, judge=Invalid()).run()
+            self.assertEqual(len(list((self.root / "episodes").glob("*.json"))), 1)
+
+    def test_abstention_needs_patience_and_stable_profile(self):
+        class Abstains:
+            def select(self, *args):
+                return {"status": "valid", "candidate_id": None, "reason": "uncertain"}
+        with RunStore(self.root, {}) as store:
+            result = self.loop(store, selector=Abstains()).run()
+        self.assertEqual(result["stop_reason"], "converged")
+        self.assertEqual(result["round"], 2)
+        self.assertEqual(result["profile_distance"], 0)
+
+    def test_changing_failure_profile_is_not_convergence(self):
+        class Alternates:
+            n = 0
+            def diagnose(self, payload):
+                self.n += 1
+                return {"status": "valid", "failure": "orientation" if self.n % 2 else "retrieval"}
+        class Abstains:
+            def select(self, *args):
+                return {"status": "valid", "candidate_id": None}
+        with RunStore(self.root, {}) as store:
+            result = self.loop(store, judge=Alternates(), selector=Abstains(), search=SearchPolicy(max_rounds=3)).run()
+        self.assertEqual(result["stop_reason"], "round_budget")
+
+
+if __name__ == "__main__":
+    unittest.main()

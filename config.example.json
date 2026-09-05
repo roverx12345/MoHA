@@ -1,0 +1,86 @@
+{
+  "schema": "moha_config_v1",
+  "media_root": "/home/jianghan/.cache/huggingface/hub/datasets--TencentARC--Video-Holmes/snapshots/02fcfc696a7e101bb0e3b8d620280bda717db3d0/video",
+  "calibration_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/calibration_input_manifest.json",
+  "validation_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/validation_input_manifest.json",
+  "initial": {
+    "max_steps": 16,
+    "history_turns": 8,
+    "history_tokens": 18000
+  },
+  "search": {
+    "max_rounds": 6,
+    "candidates_per_round": 2,
+    "patience": 2,
+    "failure_stability": 0.1,
+    "min_diagnosis_coverage": 0.5,
+    "max_diagnosis_error_rate": 0.2
+  },
+  "validation": {
+    "repeats": 1,
+    "min_gain": 0.02,
+    "cost_metric": "video_tokens",
+    "cost_penalty": 0.0,
+    "max_cost_ratio": null,
+    "require_positive_interval": false,
+    "require_each_repeat_nonnegative": false
+  },
+  "budget": {
+    "c_text_max": null,
+    "c_sensor_max": null,
+    "b_control": null,
+    "b_video": 8192,
+    "b_state": null,
+    "b_task": null,
+    "f_view": 32,
+    "p_view": 147456,
+    "p_call": 1572864,
+    "k_look": 8,
+    "k_compare": 2,
+    "f_episode": 256,
+    "b_video_episode": 65536
+  },
+  "models": {
+    "planner": {
+      "spec": {
+        "model": "gpt-5.5",
+        "base_url": "https://216.36.108.181",
+        "max_completion_tokens": 2048,
+        "timeout_seconds": 900,
+        "retries": 0
+      },
+      "key": {
+        "env": "MOHA_PLANNER_API_KEY"
+      }
+    },
+    "judge": {
+      "spec": {
+        "model": "gpt-5.5",
+        "base_url": "https://216.36.108.181",
+        "response_format_mode": "json_text",
+        "max_completion_tokens": 4096,
+        "timeout_seconds": 900,
+        "retries": 0
+      },
+      "key": {
+        "env": "MOHA_JUDGE_API_KEY"
+      }
+    }
+  },
+  "observer": {
+    "backend": "qwen3omni",
+    "model": "Qwen3-Omni-30B-A3B-Instruct",
+    "base_url": "http://127.0.0.1:8097/v1",
+    "key": {
+      "local": true
+    },
+    "timeout_seconds": 600,
+    "retries": 0
+  },
+  "specialists": [],
+  "retrieval_extension": false,
+  "runtime": {
+    "root": "/home/jianghan/video_os_runs/moha_gpt55_216_boundaryfix_20260905_164146/source",
+    "commit": "9aad050bcf26a03494ff67730f3597ba22c45794"
+  }
+}
