@@ -93,4 +93,7 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
             receipt = getattr(exc, "observer_execution_receipt", None)
             if isinstance(receipt, dict):
                 receipt["candidate_id"] = None
+                # The pinned player numbers successful observations only. Give
+                # failed requests their own IDs so the next success cannot collide.
+                receipt["receipt_id"] += f"-failed-{self.state.action_count}"
             raise

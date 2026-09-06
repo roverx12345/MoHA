@@ -38,6 +38,10 @@ MoHA 与 Video OS 分别记录 Git 提交、源码哈希和干净状态。`docto
 
 校准与验证的 episode 批次共用这一条执行路径；单端点就是一路，无另一个串行实现。Judge、计票和 promotion 仍由一个协调器顺序决策；observer probe 使用该 calibration 样本原分配的端点。任一路失败后不再提交新 episode，另一条已在执行的 episode 完成落盘后退出，续跑复用成功缓存。`workers/0.json`、`workers/1.json` 记录每路当前样本与时间，`progress.json` 由协调器更新总进度；完整 attempt 记录端点归属。
 
+`observer.py` 在固定感知服务上补充一条输出恢复路径：首次请求保持原样，仅在 observation JSON 无效、`finish_reason=length` 或支持时间越出当前窗口时，使用原媒体、目标、采样和模型重试一次。重试提示按事件/变化报告，合并连续不变的状态，保留真实重复动作与冲突；输出上限为 2048 token（原显式上限更低时沿用更低值）。不对有效 observation 做事后去重、裁剪或改写。原始输出与两次请求哈希均留档，失败输出也计入 provider token 总数，重试另计一次感知与媒体成本。
+
+两次均无效时返回 `ObserverOutputError`，不把残缺文本送入 planner 证据或 memory；planner 可在剩余调用内继续观察或回答。Judge 收到恢复状态与成本，不能仅据输出格式问题归因于 planner 能力；probe 使用同一规则，耗尽重试时记为 inconclusive。网络、鉴权、缺失用量等基础设施错误继续停止批次。恢复记录在 session receipt 的 `observer_output_recoveries`；`observer_calls` 表示逻辑请求，`observer_retry_calls` 单列额外请求，感知 ledger 与 `provider_totals` 已包含重试。此规则对所有 harness 相同，不是 catalog 中的自适应模块。
+
 无网络演示：
 
 ```bash

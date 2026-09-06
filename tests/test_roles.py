@@ -134,6 +134,7 @@ class FakeProbe:
     def observe(self, sample, original, preset):
         self.calls.append((sample, original, preset))
         return {"status": "error" if self.fail else "completed", "preset": preset,
+                "perception_receipt": {},
                 "result": {"observer_execution_receipt": receipt(2 if preset != "baseline" and self.change else 1)}}
 
 

@@ -59,6 +59,11 @@ def usage_from(events: list[dict], session: dict | None) -> dict:
             value = (sum(values) if not missing_receipt and all(v is not None for v in values) else None)
         usage[output] = value
     usage["provider_totals"] = (session or {}).get("provider_totals")
+    recoveries = (session or {}).get("observer_output_recoveries", [])
+    if recoveries:
+        # observer_calls counts logical requests; retries are additionally
+        # charged in the sensory ledger and included in provider_totals.
+        usage["observer_retry_calls"] = sum(r["additional_calls"] for r in recoveries)
     return usage
 
 

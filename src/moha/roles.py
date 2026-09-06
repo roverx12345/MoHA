@@ -35,6 +35,10 @@ Budget exhaustion or no answer alone does not establish verification or retentio
 Do not infer unavailable visual ground truth or counterfactual observer quality.
 Retention/integration require the recorded context to support the attribution.
 Infrastructure failures and insufficient causal evidence must be unresolved.
+Observer output recovery records identify unusable JSON or support times and their
+retry cost. These are not missing visual events or proof of a planner capability
+failure. Use unresolved if the cause is output validity alone; do not propose a
+semantic capability intervention without independent evidence supporting it.
 Use unresolved and explain residual_reason when these categories do not explain
 the trace. Set failed_capability to ocr/asr only for an observer failure with a
 corresponding typed request in the trace, otherwise null. Cite existing step numbers.

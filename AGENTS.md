@@ -42,6 +42,14 @@
   run or a template as calibrated. Use Git history for older profiles.
 - Never delete completed experiments to make the source look clean.
 - Existing runs use their frozen source; do not edit their code or artifacts in place.
+- Keep observer output recovery in `observer.py`: unchanged first request, one
+  same-media/goal retry for unusable observation JSON or window-relative times,
+  capped at 2048 output tokens (or an existing lower cap). Charge and audit both
+  attempts; never expose invalid facts as evidence. Exhaustion is explicit tool
+  feedback and an inconclusive probe, while infrastructure errors remain fatal.
+  Do not post-process valid claims or merge genuine repeated events. Reuse old
+  episodes across this change only after verifying the recovery path would not
+  activate and recording their original source and artifact hashes in a new run.
 - Use one episode batch path for one or multiple endpoint lanes. Keep a separate
   service/client per lane, stable sample-index assignment, and at most one active
   episode per lane. Only the coordinator makes calibration decisions. Stop new

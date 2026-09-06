@@ -100,11 +100,13 @@ def diagnosis_view(episode, sample, harness):
             item["message"] = messages_view([item["message"]])[0]
         events.append(item)
     raw = episode.raw
+    recoveries = raw.get("perception_receipt", {}).get("observer_output_recoveries", [])
     return pack({"sample_id": sample.sample_id, "task": sample.task,
         "expected_answer": sample.expected_answer, "answer": episode.answer, "status": episode.status,
         "harness": harness.to_dict(), "usage": episode.usage,
         "initial_messages": messages_view(raw.get("messages", [])[:2]),
         "tool_schemas": raw.get("tool_schemas"), "events": events,
+        **({"observer_output_recoveries": copy.deepcopy(recoveries)} if recoveries else {}),
         "recording_gaps": {
             "tool_schemas_missing": not bool(raw.get("tool_schemas")),
             "initial_messages_missing": not bool(raw.get("messages")),

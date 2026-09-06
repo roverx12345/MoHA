@@ -245,7 +245,8 @@ def prepare(config_path, repo):
 
 
 def build(prepared, store):
-    from video_os.providers.core import AssetCatalog, VideoOSPerceptionService, PERCEPTION_PROTOCOL
+    from video_os.providers.core import AssetCatalog, PERCEPTION_PROTOCOL
+    from .observer import ObserverService
     config, observer = prepared["config"], prepared["config"]["observer"]
     image, asr = config.get("image"), config.get("asr")
     image_kwargs = {}
@@ -260,7 +261,7 @@ def build(prepared, store):
     for lane, (endpoint, clients) in enumerate(zip(prepared["observer_endpoints"], prepared["clients"]["lanes"])):
         # The pinned service owns a lock and session registry. Separate services
         # and text clients keep both endpoint lanes independent during inference.
-        service = VideoOSPerceptionService(
+        service = ObserverService(
             catalog=AssetCatalog(prepared["assets"], allowed_roots=[config["media_root"]]),
             output_root=store.root / "perception_sessions" / str(lane), perception_model=observer["model"],
             perception_backend=observer["backend"], asr_backend="whisper" if asr else observer["backend"],
