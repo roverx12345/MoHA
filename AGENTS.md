@@ -42,5 +42,9 @@
   run or a template as calibrated. Use Git history for older profiles.
 - Never delete completed experiments to make the source look clean.
 - Existing runs use their frozen source; do not edit their code or artifacts in place.
+- Use one episode batch path for one or multiple endpoint lanes. Keep a separate
+  service/client per lane, stable sample-index assignment, and at most one active
+  episode per lane. Only the coordinator makes calibration decisions. Stop new
+  submissions on errors, preserve completed caches, and probe on the sample's lane.
 - Verify with `PYTHONPATH=src:<runtime-root> python -m unittest discover -s tests -v`.
   Also run the pinned runtime's full test suite when integration changes warrant it.

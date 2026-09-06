@@ -188,6 +188,7 @@ def prepare(config_path, repo):
         raise ValueError("unknown or missing MOHA configuration fields/schema")
     runtime_root = activate_runtime(config["runtime"])
     from video_os.core.budget import BudgetContract
+    from video_os.providers.scheduler import normalize_endpoint_urls
     initial = Harness.from_dict(config.get("initial", {}))
     # Runtime controls may be adjusted consistently across stacks, while all
     # adaptations must begin with the common two-tool, single-Omni H0.
@@ -212,7 +213,10 @@ def prepare(config_path, repo):
     models = config["models"]
     if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "extractor"}:
         raise ValueError("models require planner/judge and optionally extractor; selection is deterministic")
-    clients = {name: text_client(value, budget, structured=name == "judge") for name, value in models.items()}
+    endpoints = normalize_endpoint_urls(config["observer"]["base_url"])
+    clients = {"judge": text_client(models["judge"], budget, structured=True),
+               "lanes": [{name: text_client(value, budget) for name, value in models.items() if name != "judge"}
+                         for _ in endpoints]}
     credential(config["observer"]["key"])
     if "image" in config:
         allowed_image = {"model", "base_url", "retries", "timeout_seconds", "max_completion_tokens", "enable_thinking"}
@@ -235,7 +239,8 @@ def prepare(config_path, repo):
            and (item.coordinate != "retrieval_guard" or config.get("retrieval_extension", False))]
     return {"config": config, "identity": identity, "initial": initial, "search": search,
             "policy": validation, "budget": budget, "assets": {**assets, **right_assets},
-            "calibration": calibration, "validation": validation_samples, "clients": clients, "allowed_ids": ids,
+            "calibration": calibration, "validation": validation_samples, "clients": clients,
+            "observer_endpoints": endpoints, "allowed_ids": ids,
             "media_hashes": {s["media_sha256"] for s in left["samples"] + right["samples"]}}
 
 
@@ -251,25 +256,29 @@ def build(prepared, store):
                        "image_timeout_seconds": spec.get("timeout_seconds", 120),
                        "image_max_completion_tokens": spec.get("max_completion_tokens", 3072),
                        "count_ocr_enable_thinking": spec.get("enable_thinking")}
-    service = VideoOSPerceptionService(
-        catalog=AssetCatalog(prepared["assets"], allowed_roots=[config["media_root"]]),
-        output_root=store.root / "perception_sessions", perception_model=observer["model"],
-        perception_backend=observer["backend"], asr_backend="whisper" if asr else observer["backend"],
-        perception_api_key=credential(observer["key"]), base_url=observer["base_url"],
-        provider_timeout_seconds=observer.get("timeout_seconds", 300),
-        provider_retries=observer.get("retries", 0), budget=prepared["budget"], protocol=PERCEPTION_PROTOCOL,
-        whisper_backend_factory=whisper_factory(asr) if asr else None, **image_kwargs)
-    # The shared specialist receipt reads these identities from its service.
-    if image:
-        service.ocr_perception_model = image["spec"]["model"]
-    if asr:
-        service.asr_perception_model = asr["spec"]["model"]
-    clients = prepared["clients"]
-    runner = EpisodeRunner(service, clients["planner"], extractor=clients.get("extractor"),
-                           asr_backend="whisper" if asr else observer["backend"], store=store)
-    judge_client = TextRoleClient(clients["judge"])
-    return Calibrator(runner=runner, judge=Judge(judge_client),
+    runners = []
+    for lane, (endpoint, clients) in enumerate(zip(prepared["observer_endpoints"], prepared["clients"]["lanes"])):
+        # The pinned service owns a lock and session registry. Separate services
+        # and text clients keep both endpoint lanes independent during inference.
+        service = VideoOSPerceptionService(
+            catalog=AssetCatalog(prepared["assets"], allowed_roots=[config["media_root"]]),
+            output_root=store.root / "perception_sessions" / str(lane), perception_model=observer["model"],
+            perception_backend=observer["backend"], asr_backend="whisper" if asr else observer["backend"],
+            perception_api_key=credential(observer["key"]), base_url=endpoint,
+            provider_timeout_seconds=observer.get("timeout_seconds", 300),
+            provider_retries=observer.get("retries", 0), budget=prepared["budget"], protocol=PERCEPTION_PROTOCOL,
+            whisper_backend_factory=whisper_factory(asr) if asr else None, **image_kwargs)
+        # The shared specialist receipt reads these identities from its service.
+        if image:
+            service.ocr_perception_model = image["spec"]["model"]
+        if asr:
+            service.asr_perception_model = asr["spec"]["model"]
+        runners.append(EpisodeRunner(service, clients["planner"], extractor=clients.get("extractor"),
+            asr_backend="whisper" if asr else observer["backend"], store=store, lane=lane))
+    judge_client = TextRoleClient(prepared["clients"]["judge"])
+    return Calibrator(runners=runners, judge=Judge(judge_client),
         store=store, calibration=prepared["calibration"], validation=prepared["validation"],
         initial=prepared["initial"], search=prepared["search"], validation_policy=prepared["policy"],
         p_view=prepared["budget"].p_view, allowed_ids=prepared["allowed_ids"],
-        resolver=ObserverResolver(ProbeRunner(service, store), judge_client, p_view=prepared["budget"].p_view))
+        resolvers=[ObserverResolver(ProbeRunner(r.service, store), judge_client, p_view=prepared["budget"].p_view)
+                   for r in runners])

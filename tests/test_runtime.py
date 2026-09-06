@@ -367,14 +367,34 @@ class BridgeTests(unittest.TestCase):
         with RunStore(self.root/"run", prepared["identity"]) as store, \
              patch("urllib.request.urlopen", side_effect=AssertionError("build must not call an endpoint")):
             calibrator = build(prepared, store)
-            self.assertEqual(calibrator.runner.service.perception_model, "Qwen3-Omni-30B-A3B-Instruct")
-            self.assertEqual(calibrator.runner.service.asr_backend, "qwen3omni")
-            self.assertIsNotNone(calibrator.resolver)
+            self.assertEqual(calibrator.runners[0].service.perception_model, "Qwen3-Omni-30B-A3B-Instruct")
+            self.assertEqual(calibrator.runners[0].service.asr_backend, "qwen3omni")
+            self.assertIsNotNone(calibrator.resolvers[0])
 
     def test_modified_video_fails_manifest_hash(self):
         (self.root/"calibration.mp4").write_bytes(b"different")
         with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
             self.prepare()
+
+    def test_multiple_endpoints_build_independent_services_clients_and_probe_routes(self):
+        from moha.bridge import build
+        from moha.store import RunStore
+        self.config["observer"]["base_url"] = "http://unit-a:8092/v1,http://unit-b:8097/v1"
+        self.save()
+        prepared = self.prepare()
+        with RunStore(self.root / "parallel", prepared["identity"]) as store, \
+             patch("urllib.request.urlopen", side_effect=AssertionError("offline build")):
+            cal = build(prepared, store)
+            first, second = cal.runners
+            self.assertEqual(first.service.base_urls, ("http://unit-a:8092/v1",))
+            self.assertEqual(second.service.base_urls, ("http://unit-b:8097/v1",))
+            self.assertIsNot(first.service, second.service)
+            self.assertIsNot(first.service._lock, second.service._lock)
+            self.assertIsNot(first.planner, second.planner)
+            self.assertNotEqual(first.service.output_root, second.service.output_root)
+            self.assertEqual([r.lane for r in cal.runners], [0, 1])
+            for r, resolver in zip(cal.runners, cal.resolvers):
+                self.assertIs(resolver.runner.service, r.service)
 
     def test_specialist_requires_executable_backend(self):
         self.config["specialists"] = ["ocr"]
@@ -400,7 +420,7 @@ class BridgeTests(unittest.TestCase):
         self.assertIn("observer.specialist.asr", prepared["allowed_ids"])
         with RunStore(self.root / "specialists-run", prepared["identity"]) as store:
             with patch("urllib.request.urlopen", side_effect=AssertionError("no model calls during build")):
-                runner = build(prepared, store).runner
+                runner = build(prepared, store).runners[0]
                 self.assertEqual(runner.asr_backend, "whisper")
                 self.assertEqual(runner.service.asr_perception_model, "whisper-large-v3-turbo")
                 self.assertEqual(runner.service.ocr_perception_model, "Qwen/Qwen3.5-4B")

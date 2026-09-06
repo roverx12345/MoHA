@@ -1,6 +1,8 @@
 """The complete MOHA state machine. Checkpoint after each candidate decision."""
 from __future__ import annotations
 from dataclasses import asdict, dataclass
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime, timezone
 from .catalog import catalog
 from .evaluate import checked, compare
 from .models import Episode, Harness, Sample, ValidationPolicy, check_splits, digest, positive_int
@@ -28,54 +30,98 @@ class SearchPolicy:
 
 
 class Calibrator:
-    def __init__(self, *, runner, judge, store: RunStore,
+    def __init__(self, *, runners, judge, store: RunStore,
                  calibration: list[Sample], validation: list[Sample],
                  initial: Harness = Harness(), search: SearchPolicy = SearchPolicy(),
                  validation_policy: ValidationPolicy = ValidationPolicy(), p_view: int | None = None,
-                 resolver=None, allowed_ids: list[str] | None = None):
+                 resolvers=None, allowed_ids: list[str] | None = None):
         check_splits(calibration, validation)
-        self.runner, self.judge, self.store = runner, judge, store
+        self.runners = tuple(runners)
+        if not self.runners or len({id(r) for r in self.runners}) != len(self.runners):
+            raise ValueError("each execution lane requires an independent runner")
+        self.resolvers = tuple(resolvers) if resolvers is not None else (None,) * len(self.runners)
+        if len(self.resolvers) != len(self.runners):
+            raise ValueError("probe resolvers must match execution lanes")
+        self.judge, self.store = judge, store
         self.calibration, self.validation = calibration, validation
         self.search, self.validation_policy, self.p_view = search, validation_policy, p_view
         all_items = catalog()
         if allowed_ids is not None and set(allowed_ids) - set(all_items):
             raise ValueError("unknown allowed intervention")
         self.catalog = {k: v for k, v in all_items.items() if allowed_ids is None or k in allowed_ids}
-        self.resolver = resolver
         identity = {"initial": initial.to_dict(), "search": asdict(search), "validation": asdict(validation_policy),
                     "calibration": [s.id for s in calibration], "heldout": [s.id for s in validation],
                     "catalog": [x.to_dict() for x in self.catalog.values()], "p_view": p_view,
-                    "observer_probes": resolver is not None, "adaptation": "judge_uniform_vote_v1"}
+                    "observer_probes": any(r is not None for r in self.resolvers), "adaptation": "judge_uniform_vote_v1",
+                    "episode_schedule": {"rule": "sample_index_mod_lanes_v1", "lanes": len(self.runners)}}
         self.store.write("experiment.json", identity, immutable=True)
         self.state = self.store.read("checkpoint.json") or {
             "round": 0, "attempt": 0, "harness": initial.to_dict(), "history": [],
             "no_progress_rounds": 0, "previous_profile": None, "profile": None,
             "status": "running", "stop_reason": None}
 
-    def batch(self, harness: Harness, samples: list[Sample], repeat: int, split: str) -> list[Episode]:
-        results = []
-        for sample in samples:
+    def _episode(self, lane, harness, sample, repeat, split):
+        state = {"lane": lane, "phase": split, "sample_id": sample.sample_id,
+                 "harness_id": harness.id, "repeat": repeat, "status": "running",
+                 "started_at": datetime.now(timezone.utc).isoformat()}
+        self.store.write(f"workers/{lane}.json", state)
+        try:
             key = digest({"harness": harness.id, "sample": sample.id, "repeat": repeat, "split": split})
             path = f"episodes/{key}.json"
             saved = self.store.read(path)
             if saved is not None:
                 episode = Episode.from_dict(saved)
             else:
-                episode = self.runner.run(harness, sample, repeat)
+                episode = self.runners[lane].run(harness, sample, repeat)
                 if episode.status == "error":
                     self.store.record_error("episode", episode.to_dict())
                     raise RuntimeError("episode execution failed; error artifact saved")
-                checked([episode], [sample], harness, repeat)
+            checked([episode], [sample], harness, repeat)
+            if saved is None:
                 self.store.write(path, episode.to_dict(), immutable=True)
-            results.append(episode)
-            self.store.write("progress.json", {"phase": split, "completed": len(results), "total": len(samples),
-                "harness_id": harness.id, "sample_id": sample.sample_id, "repeat": repeat,
-                "cached": saved is not None, "status": episode.status, "correct": episode.correct})
+            state.update(status="completed", cached=saved is not None, episode_status=episode.status)
+            return episode, saved is not None
+        except BaseException as exc:
+            state.update(status="error", error_type=type(exc).__name__)
+            raise
+        finally:
+            state["finished_at"] = datetime.now(timezone.utc).isoformat()
+            self.store.write(f"workers/{lane}.json", state)
+
+    def batch(self, harness: Harness, samples: list[Sample], repeat: int, split: str) -> list[Episode]:
+        if len({s.sample_id for s in samples}) != len(samples):
+            raise ValueError("duplicate batch samples")
+        results, pending = [], {}
+        # Stable lanes preserve endpoint assignment across H0, candidates and
+        # resumes. Each lane has at most one episode in flight; no backlog can
+        # keep starting model calls after another lane reports an error.
+        lanes = [iter(samples[i::len(self.runners)]) for i in range(len(self.runners))]
+        with ThreadPoolExecutor(max_workers=len(self.runners)) as pool:
+            def launch(lane):
+                sample = next(lanes[lane], None)
+                if sample is not None:
+                    pending[pool.submit(self._episode, lane, harness, sample, repeat, split)] = lane
+            for lane in range(len(self.runners)):
+                launch(lane)
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                free = []
+                for future in done:
+                    lane = pending.pop(future)
+                    episode, cached = future.result()
+                    results.append(episode)
+                    self.store.write("progress.json", {"phase": split, "completed": len(results), "total": len(samples),
+                        "harness_id": harness.id, "sample_id": episode.sample_id, "repeat": repeat,
+                        "cached": cached, "status": episode.status, "correct": episode.correct,
+                        "lane": lane, "parallel_lanes": len(self.runners)})
+                    free.append(lane)
+                for lane in free:
+                    launch(lane)
         return checked(results, samples, harness, repeat)
 
     def diagnose(self, harness: Harness, episodes: list[Episode], available) -> list[dict]:
         diagnoses = []
-        for sample, episode in zip(self.calibration, episodes):
+        for index, (sample, episode) in enumerate(zip(self.calibration, episodes)):
             if episode.correct:
                 continue
             key = digest({"harness": harness.id, "sample": sample.id, "episode": episode.to_dict(),
@@ -86,10 +132,11 @@ class Calibrator:
                 payload = diagnosis_view(episode, sample, harness)
                 result = self.judge.diagnose(payload, available)
                 if result.get("status") == "valid" and result.get("failure") == "observer":
-                    if self.resolver is None:
+                    resolver = self.resolvers[index % len(self.runners)]
+                    if resolver is None:
                         result["observer_resolution"] = {"status": "unavailable"}
                     else:
-                        result["observer_resolution"] = self.resolver.resolve(sample, harness, episode, result)
+                        result["observer_resolution"] = resolver.resolve(sample, harness, episode, result)
                         if result["observer_resolution"].get("status") == "error":
                             result["status"] = "error"
                     if result.get("status") == "valid":

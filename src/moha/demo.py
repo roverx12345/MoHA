@@ -23,6 +23,6 @@ def sample(name):
 
 def run_demo(output, resume=False):
     with RunStore(output, {"demo": "moha_demo_v1", "synthetic": True}, resume=resume) as store:
-        return Calibrator(runner=DemoRunner(), judge=DemoJudge(), store=store,
+        return Calibrator(runners=[DemoRunner()], judge=DemoJudge(), store=store,
             calibration=[sample("cal")], validation=[sample(f"val{i}") for i in range(8)],
             search=SearchPolicy(max_rounds=2), validation_policy=ValidationPolicy(bootstrap_samples=100)).run()

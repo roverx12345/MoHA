@@ -45,6 +45,7 @@ def main(argv=None):
                       "runtime_commit": prepared["identity"]["runtime"]["commit"],
                       "calibration_samples": len(prepared["calibration"]),
                       "validation_samples": len(prepared["validation"]),
+                      "execution_lanes": list(prepared["observer_endpoints"]),
                       "available_catalog": prepared["allowed_ids"], "model_calls": 0,
                       "configured_specialists": {
                           "ocr": prepared["config"]["image"]["spec"]["model"] if "ocr" in prepared["config"].get("specialists", []) else None,

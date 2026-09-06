@@ -126,7 +126,7 @@ class StoreAndLoopTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "run"
 
     def loop(self, store, **kwargs):
-        params = dict(runner=DemoRunner(), judge=DemoJudge(), store=store,
+        params = dict(runners=[DemoRunner()], judge=DemoJudge(), store=store,
                       calibration=[sample("cal")], validation=[sample("val")],
                       validation_policy=ValidationPolicy(bootstrap_samples=30))
         params.update(kwargs)
@@ -164,9 +164,9 @@ class StoreAndLoopTests(unittest.TestCase):
         runner = Interrupted()
         with RunStore(self.root, {}) as store:
             with self.assertRaises(RuntimeError):
-                self.loop(store, runner=runner).run()
+                self.loop(store, runners=[runner]).run()
         with RunStore(self.root, {}, resume=True) as store:
-            result = self.loop(store, runner=runner).run()
+            result = self.loop(store, runners=[runner]).run()
         self.assertEqual(runner.calls.count(("val", Harness().id)), 1)
         self.assertEqual(runner.calls.count(("val", Harness(overview=True).id)), 2)
         self.assertTrue(result["history"][0]["validation"]["accepted"])
@@ -232,7 +232,7 @@ class StoreAndLoopTests(unittest.TestCase):
                 return e
         judge = Votes()
         with RunStore(self.root, {}) as store:
-            result = self.loop(store, runner=Runner(), judge=judge,
+            result = self.loop(store, runners=[Runner()], judge=judge,
                                calibration=[sample("cal1"), sample("cal2")],
                                search=SearchPolicy(max_rounds=2)).run()
         self.assertEqual([h["candidate"] for h in result["history"]],
@@ -257,7 +257,7 @@ class StoreAndLoopTests(unittest.TestCase):
                 calls.append(("probe", sample.sample_id))
                 return {"status": "execution_rescue"}
         with RunStore(self.root, {}) as store:
-            self.loop(store, judge=Judge(), resolver=Resolver()).run()
+            self.loop(store, judge=Judge(), resolvers=[Resolver()]).run()
         self.assertEqual(calls, [("diagnose", "cal"), ("probe", "cal"), ("recommend", "cal")])
 
 

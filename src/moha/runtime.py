@@ -55,9 +55,10 @@ class RecordingRegistry:
 
 class EpisodeRunner:
     def __init__(self, service, planner, *, extractor=None, asr_backend="qwen3omni",
-                 ocr_backend="image_ocr", store=None):
+                 ocr_backend="image_ocr", store=None, lane=0):
         self.service, self.planner, self.extractor = service, planner, extractor
         self.asr_backend, self.ocr_backend, self.store = asr_backend, ocr_backend, store
+        self.lane = lane
 
     def run(self, harness: Harness, sample: Sample, repeat: int):
         from video_os.agent.harness import VideoToolRegistry, ToolDispatcher, _tool_message
@@ -76,6 +77,7 @@ class EpisodeRunner:
         raw["planner_tool_policy"] = PLANNER_TOOL_POLICY
         raw["planner_completion_policy"] = PLANNER_COMPLETION_POLICY
         raw["memory_policy"] = MEMORY_POLICY if harness.memory else None
+        raw["execution_lane"] = {"index": self.lane, "observer_endpoint": getattr(self.service, "base_url", None)}
 
         def emit(**event):
             event = copy.deepcopy({"index": len(raw["events"]), **event})
@@ -85,7 +87,8 @@ class EpisodeRunner:
 
         if self.store:
             self.store.write(f"attempts/{attempt_id}/identity.json",
-                             {"sample_hash": sample.id, "harness_id": harness.id, "repeat": repeat}, immutable=True)
+                             {"sample_id": sample.sample_id, "sample_hash": sample.id, "harness_id": harness.id,
+                              "repeat": repeat, "execution_lane": raw["execution_lane"]}, immutable=True)
         session_id = None
         try:
             started = self.service.begin_episode(sample.asset_id)
@@ -191,8 +194,6 @@ class EpisodeRunner:
                         memory.add(result)
                     if ledger:
                         ledger.update_from_tool_result(call.name, result)
-            else:
-                raw["status"] = "budget_exhausted"
             raw["player_state"] = player.snapshot()
             if ledger:
                 raw["evidence_ledger"] = ledger.snapshot()
