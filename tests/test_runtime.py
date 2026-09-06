@@ -63,7 +63,8 @@ def call(name, arguments, id="call"):
 
 def script(final=None):
     return [call("video_player_search", {"query": "jumping person", "top_k": 3}, "search"),
-            call("video_player_observe", {"candidate_id": "s1_c1", "goal": {"type": "general", "target": "person action"}}, "observe"),
+            call("video_player_observe", {"start_seconds": 10, "end_seconds": 20,
+                                         "goal": {"type": "general", "target": "person action"}}, "observe"),
             {"role": "assistant", "content": json.dumps(final or {"status": "answered", "answer": "A"})}]
 
 

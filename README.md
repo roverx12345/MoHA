@@ -46,6 +46,17 @@ PYTHONPATH=src python -m moha demo --output /tmp/moha-demo
 
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
+Planner 用 `video_player_observe(start_seconds, end_seconds, goal)` 直接选择源视频时间范围。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
+
+```json
+{"start_seconds": 95, "end_seconds": 120,
+ "goal": {"type": "sequence", "target": "Describe the events before and after the object falls."}}
+```
+
+接口要求有限数值且 `0 <= start_seconds < end_seconds <= duration_seconds`；非法范围返回工具错误供 planner 修正，不静默移动、扩大、裁剪或取整窗口。帧率、分辨率、采样及 observer/specialist 路由仍由 harness 和固定 Video OS 执行层决定，原有媒体与预算约束继续生效。
+
+`tools.py` 只适配时间选择和 schema，复用固定运行时的观察、specialist、预算与 receipt 路径。直接窗口的 receipt 保留实际时间与目标，`candidate_id` 为 `null`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_semantic_windows_v1` 标记此接口。改变时间选择能力需要新实验并重跑 H0，旧的 candidate-only episode 不能作为新接口的基线；既有冻结运行保持原接口。
+
 模板中的 `specialists: ["ocr", "asr"]` 让两种 specialist 成为校准候选，H0 的 `harness.specialists` 仍为空。只有对应能力的 observer 失败经过执行设置 probe 后得到 `no_rescue`，Judge 才能为这条 trace 提出该 specialist；最终是否保留仍由独立验证决定。只配置模型不代表已经校准或启用。
 
 OCR 通过 QDD 的 `Qwen/Qwen3.5-4B` 执行，`image.key` 引用已有凭据。ASR 使用本地 `whisper-large-v3-turbo` 的转写接口；`asr.language: null` 表示自动识别语言。两者复用固定 VideoOS 的媒体与模型适配器，receipt 分别记录真实 specialist 模型名。缺少后端配置时不能把对应 specialist 加入候选。

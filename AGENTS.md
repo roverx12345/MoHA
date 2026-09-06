@@ -10,6 +10,12 @@
 - Preserve the paper's shared H0, catalog-constrained single-coordinate proposals,
   calibration/validation separation, fixed-support observer probes, and validation
   gate. Diagnoses are hypotheses, not fixed intervention-routing rules.
+- Keep two planner tools. `observe(start_seconds, end_seconds, goal)` selects
+  exact valid source-time support, independent of search candidate IDs. Planner
+  controls temporal scope; harness controls sampling and observer routing. Keep
+  the thin window adapter in `tools.py`, reusing the pinned execution path.
+  Receipts and probes must retain the selected window. Interface changes require
+  a new full calibration from H0; never reuse candidate-only episode caches.
 - Use trace-local Judge proposals, one unweighted vote per failed sample, stable
   catalog-ID tie breaks, and validation-only promotion. Do not reintroduce a
   global LLM selector or confidence weights. Observer proposals follow probes;
