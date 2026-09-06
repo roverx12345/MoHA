@@ -77,6 +77,9 @@ class ObserverResolver:
         found = receipts(events)
         valid = [r for r in found if r.get("observer_id") == "omni" and not r.get("error")
                  and not r.get("specialist_active") and isinstance(r.get("goal"), dict)]
+        capability_goal = {"ocr": "text", "asr": "speech"}.get(diagnosis.get("failed_capability"))
+        if capability_goal:
+            valid = [r for r in valid if r["goal"].get("type") == capability_goal]
         if not valid:
             return {"status": "inconclusive", "reason": "no cited successful generalist receipt"}
         # Exactly one cited request per failed episode, one baseline control and

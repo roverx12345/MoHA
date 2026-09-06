@@ -10,6 +10,10 @@
 - Preserve the paper's shared H0, catalog-constrained single-coordinate proposals,
   calibration/validation separation, fixed-support observer probes, and validation
   gate. Diagnoses are hypotheses, not fixed intervention-routing rules.
+- Use trace-local Judge proposals, one unweighted vote per failed sample, stable
+  catalog-ID tie breaks, and validation-only promotion. Do not reintroduce a
+  global LLM selector or confidence weights. Observer proposals follow probes;
+  freeze votes within a round and regenerate them after a harness change.
 - Keep all original observation claims and conflicting evidence available. Do not
   assume newer observations are correct or infer hidden model reasoning.
 - Commit coherent changes before real model calls. Both this checkout and the

@@ -4,8 +4,8 @@ import unittest
 from dataclasses import replace
 from moha.demo import sample
 from moha.models import Episode, Harness, canonical
-from moha.evidence import diagnosis_view, messages_view, pack, unpack, selection_trace, representative_traces
-from moha.roles import Judge, Selector
+from moha.evidence import diagnosis_view, messages_view, pack, unpack
+from moha.roles import Judge
 from moha.catalog import catalog
 from test_roles import FakeClient, diagnosis
 
@@ -78,63 +78,31 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             diagnosis_view(e, sample("wrong"), h)
         with self.assertRaises(ValueError):
-            selection_trace(e, s, Harness(memory=True), {})
+            diagnosis_view(e, s, Harness(memory=True))
 
     def test_judge_validates_cited_steps_inside_shared_payload(self):
         e, s, h = fixture()
         client = FakeClient(diagnosis(evidence_steps=[1]))
-        result = Judge(client).diagnose(diagnosis_view(e, s, h))
+        result = Judge(client).diagnose(diagnosis_view(e, s, h), list(catalog().values()))
         self.assertEqual(result["status"], "valid")
         self.assertEqual(client.requests[0]["payload"]["encoding"], "shared_json")
 
-    def test_selector_keeps_later_counterevidence_and_final_context(self):
+    def test_observer_recommendation_keeps_complete_context_and_actual_probes(self):
         e, s, h = fixture()
-        d = {"status": "valid", "sample_id": s.sample_id, **diagnosis(evidence_steps=[1])}
-        d["trace_evidence"] = selection_trace(e, s, h, d)
-        client = FakeClient({"candidate_id": None, "reason": "unresolved conflict"})
-        result = Selector(client).select([d], h, list(catalog().values()), [
-            {"candidate": "x", "from": "a", "to": "b", "validation": {
-                "accepted": False, "test_label": "HELDOUT_LABEL_MUST_NOT_LEAK"}}])
+        d = {"status": "valid", **diagnosis(evidence_steps=[1]),
+             "observer_resolution": {"status": "execution_rescue", "probes": [
+                 {"status": "completed", "result": {"observation": {"facts": ["Actual recovered evidence"]}}}],
+                 "verdicts": [{"status": "valid", "reason": "Comparison reason", "attempts": ["AUDIT_NOT_NEEDED"]}]}}
+        client = FakeClient({"candidate_id": None, "proposal_reason": "unresolved conflict"})
+        result = Judge(client).recommend(diagnosis_view(e, s, h), d, list(catalog().values()))
         self.assertEqual(result["status"], "valid")
         sent = unpack(client.requests[0]["payload"])
-        example = sent["calibration_evidence"]["examples"][0]["trace"]
-        self.assertEqual(example["sample_id"], s.sample_id)
-        self.assertIn("The car is red.", canonical(example))
-        self.assertIn("The car is blue.", canonical(example))
-        self.assertIn(4, [x["step"] for x in example["context_excerpts"]])
-        self.assertNotIn("HELDOUT_LABEL_MUST_NOT_LEAK", canonical(sent))
-
-    def test_full_context_excerpts_are_bounded_without_dropping_claims(self):
-        e, s, h = fixture()
-        e.events += [{"kind": "context", "step": step, "messages": e.raw["messages"]}
-                     for step in range(6, 17)]
-        trace = selection_trace(e, s, h, diagnosis(evidence_steps=[1, 6, 8, 10, 12]))
-        self.assertEqual([c["step"] for c in trace["context_excerpts"]], [1, 2, 16])
-        self.assertIn(10, trace["context_steps_omitted"])
-        self.assertIn("The car is red.", canonical(trace))
-        self.assertIn("The car is blue.", canonical(trace))
-
-    def test_selector_probe_evidence_is_not_only_a_rescue_label(self):
-        e, s, h = fixture()
-        d = diagnosis(observer_resolution={"status": "execution_rescue", "probes": [
-            {"status": "completed", "preset": "dense_temporal", "result": {
-                "observation": {"facts": [{"fact": "Actual recovered evidence"}]}}}],
-            "verdicts": [{"status": "valid", "preset": "dense_temporal",
-                          "reason": "Comparison reason", "attempts": [{"secret": "AUDIT_NOT_NEEDED"}]}]})
-        trace = selection_trace(e, s, h, d)
-        self.assertIn("Actual recovered evidence", canonical(trace))
-        self.assertIn("Comparison reason", canonical(trace))
-        self.assertNotIn("AUDIT_NOT_NEEDED", canonical(trace))
-
-    def test_examples_are_bounded_and_execution_rescue_has_its_own_example(self):
-        traces = [{"status": "valid", "failure": "observer", "trace_evidence": {
-            "sample_id": f"s{i}", "timeline": list(range(i))}} for i in range(5)]
-        traces.append({**traces[0], "observer_resolution": {"status": "execution_rescue"}})
-        examples = representative_traces(traces)["examples"]
-        self.assertEqual(len(examples), 2)
-        ordinary = next(x for x in examples if x["failure"] == "observer")
-        self.assertEqual(ordinary["family_sample_count"], 5)
-        self.assertEqual(ordinary["trace"]["sample_id"], "s2")
+        self.assertIn("The car is red.", canonical(sent))
+        self.assertIn("The car is blue.", canonical(sent))
+        self.assertIn("Actual recovered evidence", canonical(sent))
+        self.assertIn("Comparison reason", canonical(sent))
+        self.assertNotIn("AUDIT_NOT_NEEDED", canonical(sent))
+        self.assertEqual(len([x for x in sent["events"] if x["kind"] == "context"]), 3)
 
 
 if __name__ == "__main__":

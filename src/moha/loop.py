@@ -4,8 +4,8 @@ from dataclasses import asdict, dataclass
 from .catalog import catalog
 from .evaluate import checked, compare
 from .models import Episode, Harness, Sample, ValidationPolicy, check_splits, digest, positive_int
-from .evidence import diagnosis_view, selection_trace
-from .roles import failure_profile
+from .evidence import diagnosis_view
+from .roles import failure_profile, rank_candidates
 from .store import RunStore
 
 
@@ -28,13 +28,13 @@ class SearchPolicy:
 
 
 class Calibrator:
-    def __init__(self, *, runner, judge, selector, store: RunStore,
+    def __init__(self, *, runner, judge, store: RunStore,
                  calibration: list[Sample], validation: list[Sample],
                  initial: Harness = Harness(), search: SearchPolicy = SearchPolicy(),
                  validation_policy: ValidationPolicy = ValidationPolicy(), p_view: int | None = None,
                  resolver=None, allowed_ids: list[str] | None = None):
         check_splits(calibration, validation)
-        self.runner, self.judge, self.selector, self.store = runner, judge, selector, store
+        self.runner, self.judge, self.store = runner, judge, store
         self.calibration, self.validation = calibration, validation
         self.search, self.validation_policy, self.p_view = search, validation_policy, p_view
         all_items = catalog()
@@ -45,7 +45,7 @@ class Calibrator:
         identity = {"initial": initial.to_dict(), "search": asdict(search), "validation": asdict(validation_policy),
                     "calibration": [s.id for s in calibration], "heldout": [s.id for s in validation],
                     "catalog": [x.to_dict() for x in self.catalog.values()], "p_view": p_view,
-                    "observer_probes": resolver is not None}
+                    "observer_probes": resolver is not None, "adaptation": "judge_uniform_vote_v1"}
         self.store.write("experiment.json", identity, immutable=True)
         self.state = self.store.read("checkpoint.json") or {
             "round": 0, "attempt": 0, "harness": initial.to_dict(), "history": [],
@@ -73,16 +73,18 @@ class Calibrator:
                 "cached": saved is not None, "status": episode.status, "correct": episode.correct})
         return checked(results, samples, harness, repeat)
 
-    def diagnose(self, harness: Harness, episodes: list[Episode]) -> list[dict]:
+    def diagnose(self, harness: Harness, episodes: list[Episode], available) -> list[dict]:
         diagnoses = []
         for sample, episode in zip(self.calibration, episodes):
             if episode.correct:
                 continue
-            key = digest({"harness": harness.id, "sample": sample.id, "episode": episode.to_dict()})
+            key = digest({"harness": harness.id, "sample": sample.id, "episode": episode.to_dict(),
+                          "round": self.state["round"], "catalog": [c.to_dict() for c in available]})
             path = f"diagnoses/{key}.json"
             result = self.store.read(path)
             if result is None:
-                result = self.judge.diagnose(diagnosis_view(episode, sample, harness))
+                payload = diagnosis_view(episode, sample, harness)
+                result = self.judge.diagnose(payload, available)
                 if result.get("status") == "valid" and result.get("failure") == "observer":
                     if self.resolver is None:
                         result["observer_resolution"] = {"status": "unavailable"}
@@ -90,9 +92,14 @@ class Calibrator:
                         result["observer_resolution"] = self.resolver.resolve(sample, harness, episode, result)
                         if result["observer_resolution"].get("status") == "error":
                             result["status"] = "error"
+                    if result.get("status") == "valid":
+                        proposal = self.judge.recommend(payload, result, available)
+                        result["observer_proposal"] = proposal
+                        if proposal["status"] == "error":
+                            result["status"] = "error"
+                        else:
+                            result.update(candidate_id=proposal["candidate_id"], proposal_reason=proposal["proposal_reason"])
                 result["sample_id"] = sample.sample_id
-                if result.get("status") == "valid":
-                    result["trace_evidence"] = selection_trace(episode, sample, harness, result)
                 if result.get("status") == "error":
                     self.store.record_error("diagnosis", result)
                 else:
@@ -131,37 +138,35 @@ class Calibrator:
         try:
             while self.state["round"] < self.search.max_rounds:
                 current = Harness.from_dict(self.state["harness"])
-                diagnoses = self.diagnose(current, self.batch(current, self.calibration, self.state["round"], "calibration"))
+                rejected = {h["candidate"] for h in self.state["history"] if not h["validation"]["accepted"]}
+                available = [c for c in self.catalog.values() if c.id not in rejected and c.available(current, self.p_view)]
+                if not available:
+                    return self._finish("catalog_exhausted")
+                # Freeze all trace votes once per round. A rejection removes a
+                # candidate from the ranking; it never elicits replacement votes.
+                round_path = f"recommendations/{self.state['round']:03d}.json"
+                recorded = self.store.read(round_path)
+                if recorded is None:
+                    episodes = self.batch(current, self.calibration, self.state["round"], "calibration")
+                    diagnoses = self.diagnose(current, episodes, available)
+                    recorded = {"harness_id": current.id, "diagnoses": diagnoses,
+                                "catalog": [c.to_dict() for c in available]}
+                    self.store.write(round_path, recorded, immutable=True)
+                if recorded["harness_id"] != current.id:
+                    raise ValueError("round recommendations belong to a different harness")
+                diagnoses = recorded["diagnoses"]
                 if not diagnoses:
                     return self._finish("no_calibration_failures")
                 self.state["profile"] = failure_profile(diagnoses)
                 self.store.write(f"profiles/{self.state['round']:03d}.json", self.state["profile"], immutable=True)
-                rejected = {h["candidate"] for h in self.state["history"]
-                            if not h["validation"]["accepted"]}
-                available = [c for c in self.catalog.values() if c.id not in rejected and c.available(current, self.p_view)]
-                available = [c for c in available if c.coordinate != "specialists" or any(
-                    d.get("failed_capability") == c.value
-                    and d.get("observer_resolution", {}).get("status") == "no_rescue"
-                    for d in diagnoses)]
-                if not available:
-                    return self._finish("catalog_exhausted")
+                selection = rank_candidates(diagnoses, available)
                 slot = f"selections/{self.state['round']:03d}-{self.state['attempt']:02d}.json"
-                selection = self.store.read(slot)
-                if selection is None:
-                    selection = self.selector.select(diagnoses, current, available, self.state["history"])
-                    if selection.get("status") == "error":
-                        self.store.record_error("selection", selection)
-                    else:
-                        self.store.write(slot, selection, immutable=True)
-                if selection.get("status") == "error":
-                    raise RuntimeError("selector failed; inspect selection artifact")
-                candidate_id = selection.get("candidate_id")
+                self.store.write(slot, selection, immutable=True)
+                candidate_id = selection["candidate_id"]
                 if candidate_id is None:
                     if self._advance_round(False):
                         return self._finish("converged")
                     continue
-                if candidate_id not in {x.id for x in available}:
-                    raise ValueError("selector proposed an unavailable candidate")
                 candidate = self.catalog[candidate_id].apply(current)
                 left, right = [], []
                 for repeat in range(self.validation_policy.repeats):

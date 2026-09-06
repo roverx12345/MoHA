@@ -176,13 +176,14 @@ class WireTests(unittest.TestCase):
         from video_os.core.dispatch import ProviderRole
         from video_os.providers.client import OpenAICompatibleAdapter, ProviderSpec, TransportResponse
         from moha.bridge import TextRoleClient
-        from moha.roles import Selector
+        from moha.roles import Judge
+        from test_roles import diagnosis, payload
         from moha.catalog import catalog
         class Transport:
             calls = []
             def post(self, **kwargs):
                 self.calls.append(json.loads(kwargs["body"]))
-                value = {"wrong_key": "x"} if len(self.calls) == 1 else {"candidate_id": None, "reason": "uncertain"}
+                value = {"wrong_key": "x"} if len(self.calls) == 1 else diagnosis()
                 body = {"id": "unit", "model": "unit", "choices": [{"message": {"content": json.dumps(value)}, "finish_reason": "stop"}],
                         "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}}
                 return TransportResponse(status=200, body=json.dumps(body).encode())
@@ -191,7 +192,7 @@ class WireTests(unittest.TestCase):
         transport = Transport()
         adapter = OpenAICompatibleAdapter(spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model="unit", response_format_mode="json_schema"),
                                           api_key="unit-key", budget=budget, transport=transport)
-        result = Selector(TextRoleClient(adapter)).select([], Harness(), list(catalog().values()), [])
+        result = Judge(TextRoleClient(adapter)).diagnose(payload(), list(catalog().values()))
         self.assertEqual(result["status"], "valid", result)
         self.assertEqual(len(transport.calls), 2)
         self.assertEqual(transport.calls[0]["response_format"]["type"], "json_schema")
@@ -299,6 +300,12 @@ class BridgeTests(unittest.TestCase):
         self.config["initial"]["overview"] = True
         self.save()
         with self.assertRaisesRegex(ValueError, "shared Initial-Omni"):
+            self.prepare()
+
+    def test_old_selector_configuration_is_rejected_instead_of_silently_used(self):
+        self.config["models"]["selector"] = copy.deepcopy(self.config["models"]["judge"])
+        self.save()
+        with self.assertRaisesRegex(ValueError, "selection is deterministic"):
             self.prepare()
 
     def test_cli_doctor_has_no_inference_side_effect(self):

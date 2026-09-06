@@ -4,13 +4,13 @@ from moha.catalog import catalog
 from moha.demo import sample
 from moha.models import Episode, Harness
 from moha.probes import ObserverResolver, realized_signature
-from moha.roles import DIAGNOSIS_SCHEMA, Judge, Selector
+from moha.roles import DIAGNOSIS_SCHEMA, Judge, rank_candidates
 from moha.evidence import unpack
 
 
 def diagnosis(**kwargs):
     return {"failure": "observer", "confidence": 0.8, "reason": "Observed evidence contradicts calibration reference.",
-            "evidence_steps": [2], "failed_capability": None, "residual_reason": "", **kwargs}
+            "evidence_steps": [2], "failed_capability": None, "residual_reason": "", "candidate_id": None, "proposal_reason": "await probes", **kwargs}
 
 
 def payload():
@@ -33,15 +33,15 @@ class FakeClient:
 class RoleTests(unittest.TestCase):
     def test_exact_schema_is_in_actual_prompt(self):
         client = FakeClient(diagnosis())
-        result = Judge(client).diagnose(payload())
+        result = Judge(client).diagnose(payload(), list(catalog().values()))
         self.assertEqual(result["status"], "valid")
         self.assertIn('"failure"', client.requests[0]["prompt"])
         self.assertIn("OUTPUT JSON SCHEMA", client.requests[0]["prompt"])
-        self.assertEqual(client.requests[0]["schema"], DIAGNOSIS_SCHEMA)
+        self.assertTrue(set(DIAGNOSIS_SCHEMA["properties"]) < set(client.requests[0]["schema"]["properties"]))
 
     def test_wrong_taxonomy_field_gets_one_exact_repair(self):
         client = FakeClient({"primary_failure": "observer"}, diagnosis())
-        result = Judge(client).diagnose(payload())
+        result = Judge(client).diagnose(payload(), list(catalog().values()))
         self.assertEqual(result["status"], "valid")
         self.assertEqual(len(result["attempts"]), 2)
         self.assertEqual(client.requests[0]["schema"], client.requests[1]["schema"])
@@ -49,54 +49,75 @@ class RoleTests(unittest.TestCase):
 
     def test_repair_failure_is_not_unresolved_semantics(self):
         client = FakeClient({"failure_label": "observer"}, {"failure_label": "observer"})
-        result = Judge(client).diagnose(payload())
+        result = Judge(client).diagnose(payload(), list(catalog().values()))
         self.assertEqual(result["status"], "error")
         self.assertNotIn("failure", result)
 
     def test_network_errors_do_not_trigger_taxonomy_repair(self):
         client = FakeClient(ConnectionError("outage"))
-        self.assertEqual(Judge(client).diagnose(payload())["status"], "error")
+        self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
         self.assertEqual(len(client.requests), 1)
 
     def test_evidence_steps_must_exist(self):
         client = FakeClient(diagnosis(evidence_steps=[999]), diagnosis(evidence_steps=[999]))
-        self.assertEqual(Judge(client).diagnose(payload())["status"], "error")
+        self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
 
     def test_capability_needs_corresponding_typed_request(self):
         client = FakeClient(diagnosis(failed_capability="asr"), diagnosis(failed_capability="asr"))
-        self.assertEqual(Judge(client).diagnose(payload())["status"], "error")
-        self.assertEqual(Judge(FakeClient(diagnosis(failed_capability="ocr"))).diagnose(payload())["status"], "valid")
+        self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
+        self.assertEqual(Judge(FakeClient(diagnosis(failed_capability="ocr"))).diagnose(payload(), list(catalog().values()))["status"], "valid")
 
-    def test_direct_trace_failure_does_not_call_judge(self):
-        client = FakeClient()
-        result = Judge(client).diagnose({"events": [{"kind": "terminal", "step": 1}]})
-        self.assertEqual(result["failure"], "orientation")
-        self.assertEqual(client.requests, [])
+    def test_no_evidence_trace_still_needs_model_proposal_not_fixed_routing(self):
+        client = FakeClient(diagnosis(failure="orientation", evidence_steps=[1],
+                                    candidate_id="planner.module.memory_basic", proposal_reason="hypothesis"))
+        result = Judge(client).diagnose({"events": [{"kind": "terminal", "step": 1}]}, list(catalog().values()))
+        self.assertEqual(result["candidate_id"], "planner.module.memory_basic")
+        self.assertEqual(len(client.requests), 1)
 
-    def test_retrieved_but_never_inspected_is_direct_trace_evidence(self):
-        client = FakeClient()
-        result = Judge(client).diagnose({"events": [
-            {"kind": "tool_call", "step": 1, "tool": "video_player_search"},
-            {"kind": "tool_result", "step": 1, "tool": "video_player_search",
-             "result": {"player_state": {"search": {"candidates": [{"candidate_id": "c1"}]}}}},
-            {"kind": "terminal", "step": 2}]})
-        self.assertEqual(result["failure"], "candidate_selection")
-        self.assertEqual(client.requests, [])
+    def test_initial_observer_and_unresolved_must_abstain(self):
+        for failure in ("observer", "unresolved"):
+            invalid = diagnosis(failure=failure, candidate_id="planner.module.memory_basic")
+            client = FakeClient(invalid, invalid)
+            self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
 
-    def test_selector_sees_only_calibration_and_acceptance_history(self):
-        client = FakeClient({"candidate_id": "planner.module.memory_basic", "reason": "retain evidence"})
-        history = [{"candidate": "x", "from": "h0", "to": "h1", "validation": {
-            "accepted": False, "new_accuracy": 0.4, "heldout_secret": "DO_NOT_EXPOSE"}}]
-        result = Selector(client).select([{"status": "valid", **diagnosis()}], Harness(), list(catalog().values()), history)
-        self.assertEqual(result["status"], "valid")
-        value = unpack(client.requests[0]["payload"])
-        self.assertNotIn("DO_NOT_EXPOSE", str(value))
-        self.assertIn("failure_profile", value)
-        self.assertNotIn("new_accuracy", str(value))
+    def test_judge_cannot_invent_or_choose_unavailable_catalog_entry(self):
+        for candidate in ("invented", "planner.module.memory_basic", "observer.specialist.ocr"):
+            d = diagnosis(failure="verification", candidate_id=candidate)
+            self.assertEqual(Judge(FakeClient(d, d)).diagnose(payload(), [catalog()["planner.module.overview"]])["status"], "error")
 
-    def test_selector_cannot_invent_catalog_entry(self):
-        client = FakeClient({"candidate_id": "invented", "reason": "x"}, {"candidate_id": "invented", "reason": "x"})
-        self.assertEqual(Selector(client).select([], Harness(), list(catalog().values()), [])["status"], "error")
+    def test_observer_specialist_admission_matches_this_trace_and_probe(self):
+        available = list(catalog().values())
+        for status, goal, allowed in [("no_rescue", "text", True), ("execution_rescue", "text", False),
+                                      ("inconclusive", "text", False), ("no_rescue", "speech", False)]:
+            d = {"status": "valid", **diagnosis(failed_capability="ocr"),
+                 "observer_resolution": {"status": status, "goal_type": goal}}
+            client = FakeClient({"candidate_id": "observer.specialist.ocr" if allowed else None,
+                                 "proposal_reason": "local probe evidence"})
+            result = Judge(client).recommend(payload(), d, available)
+            self.assertEqual(result["status"], "valid")
+            ids = [c["id"] for c in unpack(client.requests[0]["payload"])["available"]]
+            self.assertEqual("observer.specialist.ocr" in ids, allowed)
+            self.assertNotIn("observer.specialist.asr", ids)
+
+    def test_uniform_votes_ties_and_unavailable_candidates(self):
+        a, b = "planner.module.memory_basic", "planner.module.overview"
+        votes = [{"status": "valid", "sample_id": str(i), **diagnosis(failure="verification",
+                    candidate_id=candidate, confidence=confidence)}
+                 for i, (candidate, confidence) in enumerate([(a, .01), (a, .01), (b, 1), (None, 1)])]
+        ranked = rank_candidates(votes, list(catalog().values()))
+        self.assertEqual(ranked["candidate_id"], a)
+        self.assertEqual([x["support_count"] for x in ranked["ranking"]], [2, 1])
+        # Confidence never breaks a tie, nor does the order of input or catalog.
+        self.assertEqual(rank_candidates(votes[1:], list(reversed(list(catalog().values()))))["candidate_id"], a)
+        self.assertEqual(rank_candidates(votes, [catalog()[b]])["candidate_id"], b)
+        with self.assertRaises(ValueError):
+            rank_candidates(votes + [votes[0]], list(catalog().values()))
+
+    def test_unresolved_error_and_unprobed_specialist_have_no_vote(self):
+        rows = [{"sample_id": "a", "status": "valid", **diagnosis(failure="unresolved", candidate_id="planner.module.overview")},
+                {"sample_id": "b", "status": "error", "candidate_id": "planner.module.overview"},
+                {"sample_id": "c", "status": "valid", **diagnosis(failed_capability="ocr", candidate_id="observer.specialist.ocr")}]
+        self.assertIsNone(rank_candidates(rows, list(catalog().values()))["candidate_id"])
 
 
 def receipt(fps=1):
@@ -149,6 +170,31 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result["status"], "no_rescue")
         result = self.resolve(FakeProbe(), FakeClient({"baseline_supports_goal": None, "alternative_supports_goal": False, "reason": "baseline unknown"}))
         self.assertEqual(result["status"], "inconclusive")
+
+    def test_specialist_probe_cannot_use_an_unrelated_cited_goal(self):
+        s, harness = sample("cal"), Harness()
+        e = Episode(s.sample_id, s.id, harness.id, 0, list(s.video_key), "A", "B", "completed",
+                    events=[{"kind": "tool_result", "step": 2,
+                             "result": {"observer_execution_receipt": receipt()}}])
+        runner, client = FakeProbe(), FakeClient()
+        result = ObserverResolver(runner, client).resolve(s, harness, e, diagnosis(failed_capability="ocr"))
+        self.assertEqual(result["status"], "inconclusive")
+        self.assertEqual(runner.calls, [])
+
+    def test_matching_typed_goal_is_probed_even_after_an_unrelated_receipt(self):
+        s, harness = sample("cal"), Harness()
+        typed = receipt()
+        typed.update(receipt_id="typed", goal={"type": "text", "target": "score"})
+        e = Episode(s.sample_id, s.id, harness.id, 0, list(s.video_key), "A", "B", "completed",
+                    events=[{"kind": "tool_result", "step": 2,
+                             "result": {"observer_execution_receipt": r}} for r in (receipt(), typed)])
+        runner = FakeProbe()
+        client = FakeClient({"baseline_supports_goal": False, "alternative_supports_goal": False,
+                             "reason": "both controls lack text evidence"})
+        result = ObserverResolver(runner, client).resolve(s, harness, e, diagnosis(failed_capability="ocr"))
+        self.assertEqual(result["status"], "no_rescue")
+        self.assertEqual(result["goal_type"], "text")
+        self.assertTrue(all(c[1]["receipt_id"] == "typed" for c in runner.calls))
 
 
 if __name__ == "__main__":

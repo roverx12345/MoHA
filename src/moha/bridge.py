@@ -13,7 +13,7 @@ from .catalog import catalog
 from .loop import Calibrator, SearchPolicy
 from .models import Harness, Sample, ValidationPolicy, canonical, check_splits, digest
 from .probes import ObserverResolver, ProbeRunner
-from .roles import Judge, Selector
+from .roles import Judge
 from .runtime import EpisodeRunner
 
 
@@ -210,9 +210,9 @@ def prepare(config_path, repo):
     if type(config.get("retrieval_extension", False)) is not bool:
         raise ValueError("retrieval_extension must be boolean")
     models = config["models"]
-    if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "selector", "extractor"}:
-        raise ValueError("models require planner/judge and optionally selector/extractor")
-    clients = {name: text_client(value, budget, structured=name in {"judge", "selector"}) for name, value in models.items()}
+    if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "extractor"}:
+        raise ValueError("models require planner/judge and optionally extractor; selection is deterministic")
+    clients = {name: text_client(value, budget, structured=name == "judge") for name, value in models.items()}
     credential(config["observer"]["key"])
     if "image" in config:
         allowed_image = {"model", "base_url", "retries", "timeout_seconds", "max_completion_tokens", "enable_thinking"}
@@ -268,8 +268,7 @@ def build(prepared, store):
     runner = EpisodeRunner(service, clients["planner"], extractor=clients.get("extractor"),
                            asr_backend="whisper" if asr else observer["backend"], store=store)
     judge_client = TextRoleClient(clients["judge"])
-    selector_client = TextRoleClient(clients.get("selector", clients["judge"]))
-    return Calibrator(runner=runner, judge=Judge(judge_client), selector=Selector(selector_client),
+    return Calibrator(runner=runner, judge=Judge(judge_client),
         store=store, calibration=prepared["calibration"], validation=prepared["validation"],
         initial=prepared["initial"], search=prepared["search"], validation_policy=prepared["policy"],
         p_view=prepared["budget"].p_view, allowed_ids=prepared["allowed_ids"],

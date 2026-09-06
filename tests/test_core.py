@@ -4,7 +4,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from moha.catalog import catalog
-from moha.demo import DemoJudge, DemoRunner, DemoSelector, sample, run_demo
+from moha.demo import DemoJudge, DemoRunner, sample, run_demo
 from moha.evaluate import checked, compare
 from moha.loop import Calibrator, SearchPolicy
 from moha.models import Episode, Harness, ValidationPolicy, check_splits
@@ -126,7 +126,7 @@ class StoreAndLoopTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "run"
 
     def loop(self, store, **kwargs):
-        params = dict(runner=DemoRunner(), judge=DemoJudge(), selector=DemoSelector(), store=store,
+        params = dict(runner=DemoRunner(), judge=DemoJudge(), store=store,
                       calibration=[sample("cal")], validation=[sample("val")],
                       validation_policy=ValidationPolicy(bootstrap_samples=30))
         params.update(kwargs)
@@ -171,24 +171,24 @@ class StoreAndLoopTests(unittest.TestCase):
         self.assertEqual(runner.calls.count(("val", Harness(overview=True).id)), 2)
         self.assertTrue(result["history"][0]["validation"]["accepted"])
 
-    def test_failed_selection_does_not_poison_immutable_resume_slot(self):
-        class OnceBad(DemoSelector):
+    def test_failed_diagnosis_does_not_poison_immutable_resume_slot(self):
+        class OnceBad(DemoJudge):
             bad = True
-            def select(selector, *args):
-                if selector.bad:
-                    selector.bad = False
+            def diagnose(judge, *args):
+                if judge.bad:
+                    judge.bad = False
                     return {"status": "error"}
-                return super().select(*args)
-        selector = OnceBad()
+                return super().diagnose(*args)
+        judge = OnceBad()
         with RunStore(self.root, {}) as store:
             with self.assertRaises(RuntimeError):
-                self.loop(store, selector=selector).run()
+                self.loop(store, judge=judge).run()
         with RunStore(self.root, {}, resume=True) as store:
-            self.assertEqual(self.loop(store, selector=selector).run()["status"], "completed")
+            self.assertEqual(self.loop(store, judge=judge).run()["status"], "completed")
 
     def test_invalid_diagnoses_stop_before_validation(self):
         class Invalid:
-            def diagnose(self, _):
+            def diagnose(self, _, available):
                 return {"status": "error"}
         with RunStore(self.root, {}) as store:
             with self.assertRaises(RuntimeError):
@@ -196,11 +196,11 @@ class StoreAndLoopTests(unittest.TestCase):
             self.assertEqual(len(list((self.root / "episodes").glob("*.json"))), 1)
 
     def test_abstention_needs_patience_and_stable_profile(self):
-        class Abstains:
-            def select(self, *args):
-                return {"status": "valid", "candidate_id": None, "reason": "uncertain"}
+        class Abstains(DemoJudge):
+            def diagnose(self, *args):
+                return {**super().diagnose(*args), "candidate_id": None, "proposal_reason": "uncertain"}
         with RunStore(self.root, {}) as store:
-            result = self.loop(store, selector=Abstains()).run()
+            result = self.loop(store, judge=Abstains()).run()
         self.assertEqual(result["stop_reason"], "converged")
         self.assertEqual(result["round"], 2)
         self.assertEqual(result["profile_distance"], 0)
@@ -208,15 +208,57 @@ class StoreAndLoopTests(unittest.TestCase):
     def test_changing_failure_profile_is_not_convergence(self):
         class Alternates:
             n = 0
-            def diagnose(self, payload):
+            def diagnose(self, payload, available):
                 self.n += 1
-                return {"status": "valid", "failure": "orientation" if self.n % 2 else "retrieval"}
-        class Abstains:
-            def select(self, *args):
-                return {"status": "valid", "candidate_id": None}
+                return {"status": "valid", "failure": "orientation" if self.n % 2 else "retrieval", "candidate_id": None}
         with RunStore(self.root, {}) as store:
-            result = self.loop(store, judge=Alternates(), selector=Abstains(), search=SearchPolicy(max_rounds=3)).run()
+            result = self.loop(store, judge=Alternates(), search=SearchPolicy(max_rounds=3)).run()
         self.assertEqual(result["stop_reason"], "round_budget")
+
+    def test_rejection_uses_next_rank_without_rejudging_then_refreshes_after_promotion(self):
+        from moha.evidence import unpack
+        class Votes:
+            calls = []
+            def diagnose(judge, payload, available):
+                data = unpack(payload)
+                judge.calls.append((data["sample_id"], data["harness"]["overview"]))
+                candidate = "planner.module.memory_basic" if data["sample_id"] == "cal1" else "planner.module.overview"
+                return {"status": "valid", "failure": "verification", "candidate_id": candidate}
+        class Runner(DemoRunner):
+            def run(self, harness, s, repeat):
+                e = super().run(harness, s, repeat)
+                if s.sample_id.startswith("cal"):
+                    e.answer = "B"  # Keep calibration failures after the validation gain.
+                return e
+        judge = Votes()
+        with RunStore(self.root, {}) as store:
+            result = self.loop(store, runner=Runner(), judge=judge,
+                               calibration=[sample("cal1"), sample("cal2")],
+                               search=SearchPolicy(max_rounds=2)).run()
+        self.assertEqual([h["candidate"] for h in result["history"]],
+                         ["planner.module.memory_basic", "planner.module.overview"])
+        self.assertEqual([h["validation"]["accepted"] for h in result["history"]], [False, True])
+        self.assertEqual(judge.calls, [("cal1", False), ("cal2", False), ("cal1", True), ("cal2", True)])
+
+    def test_observer_probe_precedes_final_proposal_and_never_sees_validation(self):
+        from moha.evidence import unpack
+        calls = []
+        class Judge:
+            def diagnose(self, payload, available):
+                calls.append(("diagnose", unpack(payload)["sample_id"]))
+                return {"status": "valid", "failure": "observer", "candidate_id": None}
+            def recommend(self, payload, diagnosis, available):
+                calls.append(("recommend", unpack(payload)["sample_id"]))
+                self_status = diagnosis["observer_resolution"]["status"]
+                assert self_status == "execution_rescue"
+                return {"status": "valid", "candidate_id": "planner.module.overview", "proposal_reason": "test"}
+        class Resolver:
+            def resolve(self, sample, *args):
+                calls.append(("probe", sample.sample_id))
+                return {"status": "execution_rescue"}
+        with RunStore(self.root, {}) as store:
+            self.loop(store, judge=Judge(), resolver=Resolver()).run()
+        self.assertEqual(calls, [("diagnose", "cal"), ("probe", "cal"), ("recommend", "cal")])
 
 
 if __name__ == "__main__":

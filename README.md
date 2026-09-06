@@ -4,7 +4,7 @@
 
 ```text
 moha/
-  src/moha/          运行、诊断、选择与校准逻辑
+  src/moha/          运行、诊断、计票与校准逻辑
   tests/             单元与集成测试
   calibrated/        已完成校准的模型组合，一组一个当前配置
   scripts/           本地 Whisper 启动入口
@@ -46,7 +46,7 @@ PYTHONPATH=src python -m moha demo --output /tmp/moha-demo
 
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
-模板中的 `specialists: ["ocr", "asr"]` 让两种 specialist 成为校准候选，H0 的 `harness.specialists` 仍为空。只有对应能力的 observer 失败经过执行设置 probe 后得到 `no_rescue`，selector 才能提出该 specialist；最终是否保留仍由独立验证决定。只配置模型不代表已经校准或启用。
+模板中的 `specialists: ["ocr", "asr"]` 让两种 specialist 成为校准候选，H0 的 `harness.specialists` 仍为空。只有对应能力的 observer 失败经过执行设置 probe 后得到 `no_rescue`，Judge 才能为这条 trace 提出该 specialist；最终是否保留仍由独立验证决定。只配置模型不代表已经校准或启用。
 
 OCR 通过 QDD 的 `Qwen/Qwen3.5-4B` 执行，`image.key` 引用已有凭据。ASR 使用本地 `whisper-large-v3-turbo` 的转写接口；`asr.language: null` 表示自动识别语言。两者复用固定 VideoOS 的媒体与模型适配器，receipt 分别记录真实 specialist 模型名。缺少后端配置时不能把对应 specialist 加入候选。
 
@@ -58,25 +58,33 @@ MOHA_WHISPER_GPU=1 bash scripts/serve_whisper.sh > /path/outside/repo/whisper.lo
 
 默认复用已有权重与 vLLM 环境，监听 `127.0.0.1:8093`，最多并发两条请求，显存比例设为 0.08。GPU、端口、vLLM 路径和权重路径可通过脚本中列出的 `MOHA_WHISPER_*` 环境变量指定。
 
-校准 trace 用于诊断和提案。Selector 每次只能选择一个合法候选或放弃；独立的视频级验证集决定是否保留修改。Observer probe 仅在校准期间执行，固定窗口、目标和 observer，测试有界执行设置变化。无可靠证据时保留 `unresolved`；预算耗尽本身不证明某项语义失败。
+校准流程只有一条主线：**Trace → Judge → Aggregate → Validation**。没有全局 LLM selector，也不接受 `models.selector` 配置。
 
-## Judge 与 selector 的证据
+1. Judge 读取每条失败 calibration trace，同时给出归因、证据步骤、`candidate_id` 和 `proposal_reason`。候选只能来自当前可执行 catalog，或为 `null`。`confidence` 仅表示归因置信度，不参与计票；没有失败标签到模块的硬编码映射。
+2. 若归因为 observer，首次提案必须为 `null`。先在同一窗口、目标、observer 下做执行设置 probe，再让同一个 Judge 根据该 trace 和实际 probe 结果完成局部提案。只有匹配 text/speech 目标的 `no_rescue` 才开放对应 OCR/ASR specialist。probe 不确定时不能据此宣称能力缺失。
+3. 每条有效失败 trace 最多一票。按支持样本数降序排序，同票按完整 candidate ID 的字典序排列。`unresolved`、弃权、错误以及不再合法的提案不投票。
+4. 每轮冻结一次提案集合。在预设候选预算内依次验证排名最高的候选；拒绝后移除它，使用原票数的下一名，不要求 Judge 改投。成功后更新 harness，并在下一轮产生新的 trace 和提案。已启用、无实际作用及此前被拒绝的候选不再参与。
+5. 验证集只用于原有成对收益门限，只有过门限才 promote。无支持候选时保留原有 patience 与失败分布稳定性停止规则。预算耗尽本身不证明某项语义失败。
 
-`evidence.py` 是唯一的证据投影入口，不改变 benchmark 时的 planner 行为。
+这个规则衡量跨 trace 的支持度，不声称求得全局最优或证明局部归因。验证集被多轮使用后仍需独立最终测试集。默认每轮最多验证两个候选；每轮最多接受一个，接受即结束该轮。
 
-- Judge 收到题目/校准答案、当前 harness、工具 schema、初始消息、每步真实可见消息、planner 已返回的文本、工具结果和用量。缺失的历史记录明确标为缺失。
+## Judge 的证据
+
+`evidence.py` 是唯一的完整轨迹投影入口，不改变 benchmark 时的 planner 行为。
+
+- Judge 收到题目/校准答案、当前 harness、工具 schema、初始消息、每步真实可见消息、planner 已返回的文本、工具结果、用量和当前候选。缺失的历史记录明确标为缺失。
 - 工具与 assistant 的 JSON 正文解析成完整对象，system/user 消息及非 JSON 文本保持原文，保留初始视频时长等元数据；不生成模型未返回的推理。不同时间出现的同一 observation 的不同内容不会按 ID 强行合并。底层文本接口继续过滤原始工具结果中的媒体句柄，不向文本模型传递视频或音频文件。
 - 重复 JSON 容器通过 `shared` 表引用。`unpack` 可还原完整语义数据；该结构只是存储去重，没有推断因果边。
-- Selector 在全局失败分布、全部诊断、当前 harness、候选与接受历史之外，得到每个失败族/能力组的一条中等长度真实校准 trace。示例选择规则与数量公开，不把示例当作全量统计。
-- 示例保留全部工具动作和观察内容，包括后来相反的描述；仅附加的完整上下文摘录限定为最多三步：最早引用步骤、紧随其后的步骤和最后决策上下文。未附完整消息的步骤明确列出，其动作、观察和可见性摘要仍在时间线中。
-- Observer probe 的实际结果与判定随代表性 trace 提供。验证/测试样本、标签和轨迹不会传给 selector。
+- observer 的最终提案同时看到完整单条 trace、实际 probe 输出及判定理由；没有跨样本代表 trace packet，也不把 validation/test 的样本、标签、轨迹或分数传给 Judge。
 - 较新的观察不自动覆盖旧观察；已纠正的错误仍可能消耗预算。冲突不自动判给 planner，也不自动启用 verification。现有 `verification_basic` 是辅助上下文模块，不是 planner 必须调用的工具。
+
+论文方法部分需与此实现一致：将“诊断不提出修复、全局 selector 选择”的描述改为局部候选推荐、等权支持聚合和验证。固定 H0、离散单坐标 catalog、observer probe 与验证门限保持原定义。
 
 ## 输出与续跑
 
-每个运行目录记录 `manifest.json`、完整 episode、诊断及其证据、选择、验证结果、checkpoint 和最终冻结 harness。单个运行只允许一个写入者；已完成记录不可覆盖。
+每个运行目录记录 `manifest.json`、完整 episode、诊断及提案、每轮冻结提案集合、计票排序及支持样本 ID、验证结果、checkpoint 和最终冻结 harness。单个运行只允许一个写入者；已完成记录不可覆盖。
 
-`resume` 只接受完全一致的源码、依赖、配置和输入身份。修改 judge/selector 后应建立新实验；复用旧 episode 必须单独核验运行语义并记录来源，不能把旧 manifest 改名覆盖。
+`resume` 只接受完全一致的源码、依赖、配置和输入身份。修改 Judge、计票规则或运行逻辑后应建立新实验；复用旧 episode 必须单独核验运行语义并记录来源，不能把旧 manifest 改名覆盖。
 
 最终评测：
 
@@ -94,6 +102,6 @@ PYTHONPATH=src python -m moha evaluate --config /path/config.json \
 PYTHONPATH=src:/path/to/pinned/video-os python -m unittest discover -s tests -v
 ```
 
-测试覆盖证据去重的还原、冲突保留、上下文可见性、selector 示例与校准隔离、原有 schema/预算/缓存/验证门限，以及真实 Video OS registry 的离线集成。
+测试覆盖证据去重的还原、冲突保留、上下文可见性、等权计票、同票排序、拒绝后续选、提案缓存与校准隔离、原有 schema/预算/缓存/验证门限，以及真实 Video OS registry 的离线集成。
 
 源码最初来自父仓库提交 `bc83ebb` 中的 MoHA 重写。现在的权威源码是这个独立仓库；父目录不再跟踪这里的文件。

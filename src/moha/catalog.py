@@ -60,9 +60,9 @@ class Intervention:
 
 def catalog() -> dict[str, Intervention]:
     modules = {
-        "overview": ("overview", "Prefetch the existing navigation-only overview."),
-        "memory_basic": ("memory", "Keep the existing compact source-linked evidence bank."),
-        "verification_basic": ("verification", "Expose the existing advisory evidence ledger; never block answers."),
+        "overview": ("overview", "Prefetch a navigation-only overview before planning; it consumes perception budget and supplies coarse regions, not answer evidence."),
+        "memory_basic": ("memory", "Keep a compact source-linked evidence bank across bounded history truncation; it preserves acquired claims but does not acquire or verify new evidence."),
+        "verification_basic": ("verification", "Expose the advisory evidence ledger and coverage/conflict feedback as planner context; never force a verification tool call or block answers."),
         "retrieval_basic": ("retrieval_guard", "Enable the existing retrieval-stagnation intervention."),
     }
     items = [Intervention(f"planner.module.{key}", field, True, text)
