@@ -82,16 +82,21 @@ def visible_observations(messages):
         if isinstance(value, dict):
             observation = value.get("observation")
             if isinstance(observation, dict) and observation.get("observation_id"):
-                found[observation["observation_id"]] = observation
+                # The same ID can occur with changed or conflicting content.
+                found[digest(observation)] = observation
             for child in value.values():
                 walk(child)
         elif isinstance(value, list):
             for child in value:
                 walk(child)
     for message in messages:
-        if message.get("role") == "tool" and isinstance(message.get("content"), str):
+        if message.get("role") in {"tool", "user"} and isinstance(message.get("content"), str):
             try:
-                walk(json.loads(message["content"]))
+                value = json.loads(message["content"])
             except json.JSONDecodeError:
                 continue
+            if message["role"] == "tool":
+                walk(value)
+            elif isinstance(value, dict):
+                walk(value.get("evidence_memory", []))
     return list(found.values())

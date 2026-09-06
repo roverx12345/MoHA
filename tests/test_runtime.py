@@ -134,6 +134,70 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "budget_exhausted")
         self.assertIsNone(result.answer)
         self.assertEqual(len(planner.calls), 2)
+        self.assertEqual(planner.calls[-1]["tool_choice"], "none")
+        self.assertNotIn("observe", [c[0] for c in service.calls])
+        terminal = next(e for e in result.events if e["kind"] == "terminal")
+        self.assertEqual(terminal["reason"], "tool_calls_on_reserved_final_call")
+
+    def test_last_call_answers_using_penultimate_observation_within_original_budget(self):
+        service, planner = Service(), Planner(script())
+        result = EpisodeRunner(service, planner).run(Harness(max_steps=3), sample("cal"), 0)
+        self.assertEqual((result.status, result.answer), ("completed", "A"))
+        self.assertEqual(result.usage["planner_calls"], 3)
+        self.assertEqual([c["tool_choice"] for c in planner.calls], ["auto", "auto", "none"])
+        context = json.loads(planner.calls[-1]["messages"][-1]["content"])
+        self.assertEqual(context["remaining_planner_calls"], 1)
+        self.assertIn("final_answer_required", context)
+        self.assertIn("A person jumps.", str(planner.calls[-1]["messages"]))
+        self.assertEqual(len([c for c in service.calls if c[0] == "observe"]), 1)
+
+    def test_single_call_budget_can_explicitly_abstain_without_tools(self):
+        service = Service()
+        planner = Planner([{"role": "assistant", "content": '{"status":"abstained","answer":null}'}])
+        result = EpisodeRunner(service, planner).run(Harness(max_steps=1), sample("cal"), 0)
+        self.assertEqual(result.status, "abstained")
+        self.assertEqual(len(planner.calls), 1)
+        self.assertEqual(planner.calls[0]["tool_choice"], "none")
+        self.assertEqual([c[0] for c in service.calls], ["begin"])
+
+    def test_memory_survives_history_eviction_with_caveats_scope_and_shared_allowance(self):
+        class Scoped(Service):
+            def inspect_window(self, session_id, **kwargs):
+                result = super().inspect_window(session_id, **kwargs)
+                index = int(kwargs["start_seconds"])
+                result["observation"].update(observation_id=f"obs{index}",
+                    missing=[f"The prior action at {index} is not visible."],
+                    uncertainties=[f"The person at {index} cannot be identified."])
+                result["observation"]["facts"][0]["fact"] = f"Observed action at {index}."
+                return result
+        messages = [call("video_player_observe", {"start_seconds": i, "end_seconds": i + 5,
+                     "goal": {"type": "sequence", "target": f"action at {i}"}}, str(i)) for i in range(5)]
+        messages.append({"role": "assistant", "content": '{"answer":"A"}'})
+        for enabled in (False, True):
+            planner = Planner(copy.deepcopy(messages))
+            harness = Harness(memory=enabled, max_steps=6, history_turns=1)
+            result = EpisodeRunner(Scoped(), planner).run(harness, sample("cal"), 0)
+            self.assertEqual(result.status, "completed", result.raw)
+            event = [e for e in result.events if e["kind"] == "context"][-1]
+            history = event["messages"][:-1]
+            self.assertNotIn("Observed action at 0.", str(history))
+            self.assertNotIn("latest tool result and current budget/player state as authoritative", str(history))
+            self.assertIn("Newer observations do not automatically override", str(history))
+            context = json.loads(planner.calls[-1]["messages"][-1]["content"])
+            if enabled:
+                self.assertEqual(context["evidence_memory"], event["context"]["evidence_memory"])
+                first = context["evidence_memory"][0]
+                self.assertEqual(first["observation_context"]["window"], [0, 5])
+                self.assertEqual(first["observation_context"]["goal"]["target"], "action at 0")
+                self.assertEqual(first["observation"]["missing"], ["The prior action at 0 is not visible."])
+                self.assertEqual(first["observation"]["uncertainties"], ["The person at 0 cannot be identified."])
+                self.assertIn(first["observation"], event["visible_observations"])
+                audit = event["history_audit"]
+                self.assertLessEqual(audit["memory"]["tokens"], harness.history_tokens // 2)
+                self.assertEqual(audit["history_token_limit"] + audit["memory"]["tokens"], harness.history_tokens)
+            else:
+                self.assertNotIn("evidence_memory", context)
+                self.assertNotIn("Observed action at 0.", str(event["messages"]))
 
     def test_explicit_abstention_and_natural_terminal_answer(self):
         for message, status, answer in [({"status": "abstained", "answer": None}, "abstained", None),
@@ -191,6 +255,32 @@ class RuntimeTests(unittest.TestCase):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "run these integration tests in the Video OS environment")
 class WireTests(unittest.TestCase):
+    def test_reserved_final_call_disables_tools_on_actual_provider_wire(self):
+        from video_os.agent.planner import OpenAICompatiblePlannerClient
+        from video_os.core.budget import BudgetContract
+        from video_os.core.dispatch import ProviderRole
+        from video_os.providers.client import ProviderSpec, TransportResponse
+        class Transport:
+            def __init__(self):
+                self.calls, self.responses = [], script()
+            def post(self, **kwargs):
+                self.calls.append(json.loads(kwargs["body"]))
+                message = self.responses.pop(0)
+                body = {"id": "unit", "model": "unit", "choices": [{"message": message,
+                        "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
+                        "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}}
+                return TransportResponse(status=200, body=json.dumps(body).encode())
+        budget = BudgetContract(c_text_max=None, c_sensor_max=None, b_control=None, b_video=8192,
+            b_state=None, b_task=None, f_view=32, p_view=147456, p_call=1572864, k_look=8,
+            k_compare=2, f_episode=256, b_video_episode=65536)
+        transport = Transport()
+        planner = OpenAICompatiblePlannerClient(spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model="unit"),
+                                                api_key="unit-key", budget=budget, transport=transport)
+        result = EpisodeRunner(Service(), planner).run(Harness(max_steps=3, memory=True), sample("cal"), 0)
+        self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
+        self.assertEqual([c["tool_choice"] for c in transport.calls], ["auto", "auto", "none"])
+        self.assertIn("evidence_memory", transport.calls[-1]["messages"][-1]["content"])
+
     def test_text_boundary_keeps_video_metadata_in_actual_user_message(self):
         from video_os.core.dispatch import sanitize_gpt_text_payload
         from moha.evidence import messages_view, pack, unpack

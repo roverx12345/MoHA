@@ -87,6 +87,14 @@ MOHA_WHISPER_GPU=1 bash scripts/serve_whisper.sh > /path/outside/repo/whisper.lo
 
 这一步只清理已有输入，不总结或找回已被历史截断丢弃的事实，也不隐式开启 memory。事实附带的来源 ID 与空挂的历史 ID 区别处理；相同 observation ID 下出现的矛盾正文仍分别保留。
 
+`memory_basic` 由 `memory.py` 实现，按完整 observation 保留 planner 已收到的事实正文、来源、窗口、目标、采样信息、`missing`、`uncertainties` 和 refinement。没有额外 LLM 总结，也不再按 10 条 fact、每条 240 字符截断。零事实但包含缺失信息的观察仍可保留；相同 ID 下的不同正文或限定条件分别保存，仅完全相同的记录去重。
+
+Memory 最多占 `history_tokens` 的一半，按固定运行时的保守 token 估计计数：先放入能容纳的前两条 observation，再从新到旧填充，展示时恢复发生顺序。超出容量时整条省略，不能只留下事实而删除其限定条件；省略条数明确告知 planner，完整记录仍在审计轨迹中。实际 memory 用量从原历史 token 配额扣除，剩余额度用于原有历史选择，因此不靠另加一份历史预算实现记忆。原历史上限仍是 advisory：保留的锚点和最新完整工具轮可能超额，system/task、工具 schema 及控制反馈也不属于该历史配额；这不是总 API 输入的硬上限。
+
+压缩提示明确区分当前 player/预算状态与观察证据，不再将最新工具结果整体视为权威。否定和缺失信息仅适用于所述窗口与目标，不等于全视频不存在该事件；新观察不能自动覆盖旧的相反证据。context 事件的 `visible_observations` 同时统计保留的工具正文和实际送出的 memory，按内容去重，保留同 ID 的冲突。
+
+所有 harness 都在既定 `max_steps` 内预留最后一次 planner 调用用于回答或明确弃权（默认第 16 次），以免最后一步取得观察后无机会使用。该调用携带 `tool_choice: none` 和明确收尾提示，不增加额外调用。若 provider 仍返回工具调用，记录原始输出和 `tool_calls_on_reserved_final_call`，不执行这些工具，结果保持 `budget_exhausted`。轨迹分别记录 `planner_completion_policy` 和启用时的 `memory_policy`；较早作答不受阻拦。
+
 修改投影会改变实际模型输入与可保留的历史范围，下一次必须从 H0 开始重新进行完整 calibration/validation，不能复用旧投影下的 episode 作为新基线。正在运行的实验继续使用其冻结源码和原有投影。
 
 ## Judge 的证据

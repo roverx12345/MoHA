@@ -5,8 +5,16 @@ import json
 from .models import canonical
 
 
-PLANNER_CONTEXT_POLICY = "moha_planner_context_v1"
+PLANNER_CONTEXT_POLICY = "moha_planner_context_v2"
 STATE_FIELDS = ("player_state", "state", "budget")
+HISTORY_NOTICE = (
+    "\n\n[Context note] Some earlier planner/tool turns were omitted. Use the "
+    "retained observations and explicit evidence memory, if supplied. Each "
+    "observation is scoped to its window and goal; missing evidence within that "
+    "view does not establish absence across the video. Latest player/budget state "
+    "records current navigation and resources. Newer observations do not "
+    "automatically override earlier or conflicting evidence."
+)
 
 
 def tool_context(result, *, keep_state=True):
@@ -86,3 +94,14 @@ def planner_messages(messages):
             initial["overview"] = tool_context(initial["overview"], keep_state=latest is None)
             result[1]["content"] = canonical(initial)
     return result
+
+
+def bounded_history(messages, *, token_limit, max_turns):
+    """Reuse the pinned history cap with a notice that preserves evidence conflicts."""
+    from video_os.agent.harness import _planner_history_messages
+    projected = planner_messages(messages)
+    bounded, audit = _planner_history_messages(projected, token_limit=token_limit, max_turns=max_turns)
+    if audit["history_compacted"] and isinstance(projected[1].get("content"), str):
+        bounded[1]["content"] = projected[1]["content"] + HISTORY_NOTICE
+    audit["projection"] = PLANNER_CONTEXT_POLICY
+    return bounded, audit

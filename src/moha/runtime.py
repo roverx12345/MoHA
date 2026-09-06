@@ -4,7 +4,11 @@ import copy
 import uuid
 from .models import Harness, Sample, canonical
 from .records import normalize, visible_observations
-from .context import PLANNER_CONTEXT_POLICY, planner_messages
+from .context import PLANNER_CONTEXT_POLICY, bounded_history
+from .memory import MEMORY_POLICY, ObservationMemory
+
+
+PLANNER_COMPLETION_POLICY = "moha_reserved_final_call_v1"
 
 
 PLANNER_PROMPT = """Answer the video question using the supplied Video OS tools.
@@ -18,7 +22,10 @@ is valid only for relation; omit it for all other goal types. Memory and verific
 feedback, if supplied, are advisory. Resolve uncertainty using your judgment within
 the remaining budget. When ready, return a final JSON object with status 'answered'
 and answer equal to an option label, or status 'abstained' and answer null.
-The final answer is an assistant message, not a tool call."""
+The last remaining planner call is reserved for a final answer or explicit abstention;
+no tools can execute on that call. The final answer is an assistant message, not a
+tool call. Memory contains prior observations with their original scope and caveats;
+it is not a summary or verification, and omitted records do not imply absence."""
 
 
 class RecordingRegistry:
@@ -53,8 +60,8 @@ class EpisodeRunner:
         self.asr_backend, self.ocr_backend, self.store = asr_backend, ocr_backend, store
 
     def run(self, harness: Harness, sample: Sample, repeat: int):
-        from video_os.agent.harness import (VideoToolRegistry, ToolDispatcher,
-            _planner_history_messages, _update_compact_evidence_bank, _tool_message)
+        from video_os.agent.harness import VideoToolRegistry, ToolDispatcher, _tool_message
+        from video_os.core.context import ConservativeTokenCounter
         from .tools import WindowPlayerRegistry, PLANNER_TOOL_POLICY
         from video_os.agent.compaction import _compact_initial_state
         from video_os.agent.evidence import EvidenceLedger
@@ -67,6 +74,8 @@ class EpisodeRunner:
                "answer": None, "harness_id": harness.id, "repeat": repeat}
         raw["planner_context_policy"] = PLANNER_CONTEXT_POLICY
         raw["planner_tool_policy"] = PLANNER_TOOL_POLICY
+        raw["planner_completion_policy"] = PLANNER_COMPLETION_POLICY
+        raw["memory_policy"] = MEMORY_POLICY if harness.memory else None
 
         def emit(**event):
             event = copy.deepcopy({"index": len(raw["events"]), **event})
@@ -97,7 +106,8 @@ class EpisodeRunner:
             registry = RecordingRegistry(player, emit)
             dispatcher = ToolDispatcher(registry)
             ledger = EvidenceLedger.from_task(sample.task, require_commit=False) if harness.verification else None
-            bank = []
+            memory = ObservationMemory() if harness.memory else None
+            counter = ConservativeTokenCounter()
             task_context = {"task": sample.task, "initial": _compact_initial_state(started, initial)}
             if harness.overview:
                 overview = player.initialize_overview()
@@ -110,18 +120,30 @@ class EpisodeRunner:
             tools = player.schemas()
             raw["tool_schemas"] = tools
             for step in range(1, harness.max_steps + 1):
-                projected, audit = _planner_history_messages(planner_messages(messages), token_limit=harness.history_tokens,
-                                                            max_turns=harness.history_turns)
-                audit["projection"] = PLANNER_CONTEXT_POLICY
+                final_call = step == harness.max_steps
                 context = {"remaining_planner_calls": harness.max_steps - step + 1}
-                if harness.memory:
+                if final_call:
+                    context["final_answer_required"] = (
+                        "This is the last planner call. Return a final answer or explicit abstention "
+                        "using the available evidence. Tools are disabled; no further observations can execute.")
+                history_limit = harness.history_tokens
+                memory_audit = None
+                if memory is not None:
+                    bank, memory_audit = memory.snapshot(token_limit=max(1, harness.history_tokens // 2), count=counter.count)
                     context["evidence_memory"] = bank
+                    context["memory_omitted_observations"] = memory_audit["omitted_observations"]
+                    history_limit = max(0, history_limit - memory_audit["tokens"])
                 if ledger:
                     context["advisory_verification"] = ledger.feedback()
+                projected, audit = bounded_history(messages, token_limit=history_limit, max_turns=harness.history_turns)
+                audit["history_token_limit"] = history_limit
+                if memory_audit is not None:
+                    audit["memory"] = memory_audit
                 projected.append({"role": "user", "content": canonical(context)})
                 emit(kind="context", step=step, messages=projected, context=context, history_audit=audit,
                      visible_observations=visible_observations(projected))
-                response = self.planner.call(messages=projected, tools=tools, tool_choice="auto", parallel_tool_calls=False)
+                response = self.planner.call(messages=projected, tools=tools,
+                                             tool_choice="none" if final_call else "auto", parallel_tool_calls=False)
                 message = response.message()
                 messages.append(message)
                 emit(kind="planner", step=step, message=message, metadata=dict(response.metadata))
@@ -141,6 +163,13 @@ class EpisodeRunner:
                         raw["status"] = "abstained"
                     emit(kind="terminal", step=step, message=message, answer=answer)
                     break
+                if final_call:
+                    # A provider may ignore tool_choice. Do not spend perception
+                    # budget on evidence the planner will never have a turn to use.
+                    raw["status"] = "budget_exhausted"
+                    emit(kind="terminal", step=step, message=message,
+                         reason="tool_calls_on_reserved_final_call", answer={"status": "budget_exhausted", "answer": None})
+                    break
                 # Keep the shared native contract: execute returned calls in order,
                 # even if the provider ignored parallel_tool_calls=False.
                 for call in response.tool_calls:
@@ -158,8 +187,8 @@ class EpisodeRunner:
                     messages.append(_tool_message(call.id, result))
                     if registry.fatal_error:
                         raise RuntimeError("tool infrastructure failure: " + registry.fatal_error)
-                    if harness.memory:
-                        bank = _update_compact_evidence_bank(bank, result)
+                    if memory is not None:
+                        memory.add(result)
                     if ledger:
                         ledger.update_from_tool_result(call.name, result)
             else:

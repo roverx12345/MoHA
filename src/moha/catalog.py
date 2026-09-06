@@ -61,7 +61,7 @@ class Intervention:
 def catalog() -> dict[str, Intervention]:
     modules = {
         "overview": ("overview", "Prefetch a navigation-only overview before planning; it consumes perception budget and supplies coarse regions, not answer evidence."),
-        "memory_basic": ("memory", "Keep a compact source-linked evidence bank across bounded history truncation; it preserves acquired claims but does not acquire or verify new evidence."),
+        "memory_basic": ("memory", "Retain whole source-linked observations, including their window, goal, facts, missing evidence and uncertainties, across history truncation. Within half the history token allowance, prefer two early observations then recent ones; omit whole records, never truncate claims or merge conflicts. It acquires and verifies no new evidence."),
         "verification_basic": ("verification", "Expose the advisory evidence ledger and coverage/conflict feedback as planner context; never force a verification tool call or block answers."),
         "retrieval_basic": ("retrieval_guard", "Enable the existing retrieval-stagnation intervention."),
     }

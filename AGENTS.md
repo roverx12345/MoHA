@@ -27,6 +27,11 @@
   leave audit-only observation histories in full logs. Do not restore evicted
   facts outside the explicit memory module. A changed projection needs a fresh
   full calibration, including H0; never relabel cached old-policy episodes.
+- Memory keeps whole scoped observations and their missing/uncertainty fields,
+  without summarizing, clipping claims, or merging same-ID conflicts. Its bounded
+  view reserves part of the existing history allowance. Compaction must not
+  declare newer evidence authoritative. Reserve the final existing planner call
+  for an answer/abstention; never execute tools on it or add a free extra call.
 - Commit coherent changes before real model calls. Both this checkout and the
   pinned runtime must be clean. Record source/runtime commits, input/config hashes,
   provider identities, command, environment, and output location for every run.
