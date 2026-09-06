@@ -96,6 +96,37 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(context["evidence_memory"])
         self.assertIn("advisory_verification", context)
 
+    def test_planner_cleanup_preserves_full_audit_and_does_not_enable_memory(self):
+        from moha.context import PLANNER_CONTEXT_POLICY
+        service, planner = Service(), Planner(script())
+        result = EpisodeRunner(service, planner).run(Harness(), sample("cal"), 0)
+        self.assertEqual(result.status, "completed")
+        sent = json.loads(planner.calls[-1]["messages"][-2]["content"])
+        self.assertNotIn("observations", sent["player_state"])
+        self.assertNotIn("observer_execution_receipt", sent)
+        self.assertEqual(sent["observation"]["facts"][0]["fact"], "A person jumps.")
+        raw = next(e["result"] for e in result.events if e["kind"] == "tool_result" and e["tool"] == "video_player_observe")
+        self.assertIn("observer_execution_receipt", raw)
+        self.assertTrue(raw["player_state"]["observations"])
+        self.assertNotIn("evidence_memory", planner.calls[-1]["messages"][-1]["content"])
+        self.assertEqual(result.raw["planner_context_policy"], PLANNER_CONTEXT_POLICY)
+        self.assertEqual([e for e in result.events if e["kind"] == "context"][-1]["messages"], planner.calls[-1]["messages"])
+
+    def test_cleanup_runs_before_bounded_history_selection(self):
+        from moha.context import planner_messages
+        from video_os.agent.harness import _planner_history_messages
+        from test_context import envelope, message
+        original = [{"role": "system", "content": "s"}, {"role": "user", "content": "q"}]
+        for i in range(5):
+            value = envelope("visible fact " + str(i))
+            value["player_state"]["observations"] *= 100
+            original.extend([call("video_player_observe", {}, str(i)), message(value, str(i))])
+        raw_selected, raw_audit = _planner_history_messages(original, token_limit=6000, max_turns=8)
+        selected, audit = _planner_history_messages(planner_messages(original), token_limit=6000, max_turns=8)
+        self.assertGreater(audit["history_turns_kept"], raw_audit["history_turns_kept"])
+        self.assertIn("visible fact 2", str(selected))
+        self.assertNotIn("visible fact 2", str(raw_selected))
+
     def test_budget_exhaustion_does_not_get_free_final_call(self):
         service, planner = Service(), Planner(script())
         result = EpisodeRunner(service, planner).run(Harness(max_steps=2), sample("cal"), 0)

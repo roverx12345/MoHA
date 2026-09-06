@@ -16,6 +16,11 @@
   freeze votes within a round and regenerate them after a harness change.
 - Keep all original observation claims and conflicting evidence available. Do not
   assume newer observations are correct or infer hidden model reasoning.
+- Project planner input through `context.py` before bounded history selection.
+  Keep actionable candidates, search/visited state, and retained observation text;
+  leave audit-only observation histories in full logs. Do not restore evicted
+  facts outside the explicit memory module. A changed projection needs a fresh
+  full calibration, including H0; never relabel cached old-policy episodes.
 - Commit coherent changes before real model calls. Both this checkout and the
   pinned runtime must be clean. Record source/runtime commits, input/config hashes,
   provider identities, command, environment, and output location for every run.

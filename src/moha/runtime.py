@@ -4,6 +4,7 @@ import copy
 import uuid
 from .models import Harness, Sample, canonical
 from .records import normalize, visible_observations
+from .context import PLANNER_CONTEXT_POLICY, planner_messages
 
 
 PLANNER_PROMPT = """Answer the video question using the supplied Video OS tools.
@@ -61,6 +62,7 @@ class EpisodeRunner:
         raw = {"schema": "moha_trajectory_v1", "attempt_id": attempt_id, "events": [],
                "state": {"task": copy.deepcopy(sample.task)}, "messages": [], "status": "error",
                "answer": None, "harness_id": harness.id, "repeat": repeat}
+        raw["planner_context_policy"] = PLANNER_CONTEXT_POLICY
 
         def emit(**event):
             event = copy.deepcopy({"index": len(raw["events"]), **event})
@@ -104,8 +106,9 @@ class EpisodeRunner:
             tools = player.schemas()
             raw["tool_schemas"] = tools
             for step in range(1, harness.max_steps + 1):
-                projected, audit = _planner_history_messages(messages, token_limit=harness.history_tokens,
+                projected, audit = _planner_history_messages(planner_messages(messages), token_limit=harness.history_tokens,
                                                             max_turns=harness.history_turns)
+                audit["projection"] = PLANNER_CONTEXT_POLICY
                 context = {"remaining_planner_calls": harness.max_steps - step + 1}
                 if harness.memory:
                     context["evidence_memory"] = bank

@@ -68,6 +68,16 @@ MOHA_WHISPER_GPU=1 bash scripts/serve_whisper.sh > /path/outside/repo/whisper.lo
 
 这个规则衡量跨 trace 的支持度，不声称求得全局最优或证明局部归因。验证集被多轮使用后仍需独立最终测试集。默认每轮最多验证两个候选；每轮最多接受一个，接受即结束该轮。
 
+## Planner 上下文
+
+`context.py` 在原有历史轮数与 token 上限生效之前投影 planner 输入：完整 observation 正文、事实 ID、否定结果、不确定性、时间范围与候选句柄仍保留；历史工具消息中的重复 player/budget/state 快照只保留最新一份。最新状态中的候选目录、搜索历史、访问窗口和预算继续可见，旧 search 消息单独保留其返回的候选句柄。
+
+没有事实正文的历史 observation ID/fact IDs、观察审计记录和版本标识不再反复进入 planner 上下文。实际观察仍携带其窗口、目标与简要采样信息。完整工具结果、执行 receipt、原始消息都留在轨迹中；每步 context 事件记录真实送给 planner 的消息，`planner_context_policy` 标记投影规则。
+
+这一步只清理已有输入，不总结或找回已被历史截断丢弃的事实，也不隐式开启 memory。事实附带的来源 ID 与空挂的历史 ID 区别处理；相同 observation ID 下出现的矛盾正文仍分别保留。
+
+修改投影会改变实际模型输入与可保留的历史范围，下一次必须从 H0 开始重新进行完整 calibration/validation，不能复用旧投影下的 episode 作为新基线。正在运行的实验继续使用其冻结源码和原有投影。
+
 ## Judge 的证据
 
 `evidence.py` 是唯一的完整轨迹投影入口，不改变 benchmark 时的 planner 行为。
