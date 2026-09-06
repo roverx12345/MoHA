@@ -34,7 +34,7 @@ Video OS 的工具、媒体处理和模型适配器由 `config.runtime.root` 指
 
 MoHA 与 Video OS 分别记录 Git 提交、源码哈希和干净状态。`doctor` 检查输入、视频哈希与配置，不调用模型；真实推理要求两份代码均已提交。配置只保存凭据文件或环境变量引用，不保存密钥。
 
-`observer.base_url` 支持用逗号列出同一 Omni 模型的多个端点，每个端点对应一路独立的 service、planner client 和 session 目录。例如 dev-other 两路可设置为 `http://192.168.21.250:8092/v1,http://192.168.21.250:8097/v1`。样本按清单序号轮流固定分配，每路同时最多运行一个 episode；缓存命中、H0 与候选验证均保持相同端点分配，最终结果按原清单顺序对齐。
+`models.planner.spec.base_url` 和 `observer.base_url` 均支持用逗号列出同一模型的多个端点。两边数量相同时按顺序配对；只有一个端点的一边由所有 lane 共用。例如两个 9B planner 端点和一个 Omni 端点形成两路执行，共用该 Omni。一个 planner 端点和两个 Omni 端点仍形成原有的两路执行；数量既不相等又都大于一时拒绝配置。每路拥有独立的 service、planner client 和 session 目录，即使地址相同也不共享本地可变状态。样本按清单序号轮流固定分配，每路同时最多运行一个 episode；缓存命中、H0 与候选验证均保持相同端点分配，最终结果按原清单顺序对齐。`doctor` 同时显示各路 planner 和 observer 地址。
 
 校准与验证的 episode 批次共用这一条执行路径；单端点就是一路，无另一个串行实现。Judge、计票和 promotion 仍由一个协调器顺序决策；observer probe 使用该 calibration 样本原分配的端点。任一路失败后不再提交新 episode，另一条已在执行的 episode 完成落盘后退出，续跑复用成功缓存。`workers/0.json`、`workers/1.json` 记录每路当前样本与时间，`progress.json` 由协调器更新总进度；完整 attempt 记录端点归属。
 

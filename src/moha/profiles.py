@@ -45,7 +45,8 @@ def calibrated_profile(run):
     config = identity["config"]
     # Only fixed, non-credential provider settings leave the experiment directory.
     spec_fields = {"model", "base_url", "response_format_mode", "timeout_seconds", "retries",
-                   "max_completion_tokens", "temperature", "seed", "reasoning_effort", "enable_thinking"}
+                   "max_completion_tokens", "temperature", "seed", "reasoning_effort", "enable_thinking",
+                   "thinking_wire_format", "reasoning_preamble_mode"}
     def spec(value):
         return {k: v for k, v in value["spec"].items() if k in spec_fields}
     stack = {"models": {name: spec(value) for name, value in config["models"].items()},

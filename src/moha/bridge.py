@@ -180,6 +180,24 @@ def activate_runtime(reference):
     return root
 
 
+def lane_clients(models, observer_url, budget):
+    """Pair ordered endpoint pools, broadcasting a shared provider to each lane."""
+    from video_os.providers.scheduler import normalize_endpoint_urls
+    planners = normalize_endpoint_urls(models["planner"]["spec"]["base_url"])
+    observers = normalize_endpoint_urls(observer_url)
+    count = max(len(planners), len(observers))
+    if any(len(pool) not in (1, count) for pool in (planners, observers)):
+        raise ValueError("planner/observer endpoint counts must match or one must be a singleton")
+    planners = planners * count if len(planners) == 1 else planners
+    observers = observers * count if len(observers) == 1 else observers
+    lanes = []
+    for endpoint in planners:
+        planner = models["planner"]
+        lane_models = {**models, "planner": {**planner, "spec": {**planner["spec"], "base_url": endpoint}}}
+        lanes.append({name: text_client(value, budget) for name, value in lane_models.items() if name != "judge"})
+    return planners, observers, lanes
+
+
 def prepare(config_path, repo):
     config = read_object(config_path)
     required = {"schema", "runtime", "media_root", "calibration_manifest", "validation_manifest", "budget", "models", "observer"}
@@ -188,7 +206,6 @@ def prepare(config_path, repo):
         raise ValueError("unknown or missing MOHA configuration fields/schema")
     runtime_root = activate_runtime(config["runtime"])
     from video_os.core.budget import BudgetContract
-    from video_os.providers.scheduler import normalize_endpoint_urls
     initial = Harness.from_dict(config.get("initial", {}))
     # Runtime controls may be adjusted consistently across stacks, while all
     # adaptations must begin with the common two-tool, single-Omni H0.
@@ -213,10 +230,9 @@ def prepare(config_path, repo):
     models = config["models"]
     if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "extractor"}:
         raise ValueError("models require planner/judge and optionally extractor; selection is deterministic")
-    endpoints = normalize_endpoint_urls(config["observer"]["base_url"])
+    planner_endpoints, endpoints, lanes = lane_clients(models, config["observer"]["base_url"], budget)
     clients = {"judge": text_client(models["judge"], budget, structured=True),
-               "lanes": [{name: text_client(value, budget) for name, value in models.items() if name != "judge"}
-                         for _ in endpoints]}
+               "lanes": lanes}
     credential(config["observer"]["key"])
     if "image" in config:
         allowed_image = {"model", "base_url", "retries", "timeout_seconds", "max_completion_tokens", "enable_thinking"}
@@ -240,7 +256,7 @@ def prepare(config_path, repo):
     return {"config": config, "identity": identity, "initial": initial, "search": search,
             "policy": validation, "budget": budget, "assets": {**assets, **right_assets},
             "calibration": calibration, "validation": validation_samples, "clients": clients,
-            "observer_endpoints": endpoints, "allowed_ids": ids,
+            "planner_endpoints": planner_endpoints, "observer_endpoints": endpoints, "allowed_ids": ids,
             "media_hashes": {s["media_sha256"] for s in left["samples"] + right["samples"]}}
 
 
