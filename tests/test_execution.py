@@ -53,6 +53,8 @@ class AllocationTests(unittest.TestCase):
         self.assertLessEqual(b['frames'], t['frames'])
         for plan in plans.values():
             self.assertLessEqual(plan['video_tokens'], r.budget.b_video)
+            self.assertGreaterEqual(plan['resolution'][0], 480)
+            self.assertGreaterEqual(plan['resolution'][1], 270)
             self.assertEqual(plan['window'], [0,60])
             self.assertLessEqual(plan['frames']*plan['resolution'][0]*plan['resolution'][1], r.budget.p_call)
             # The old renderer must accept the selected packet without changing it.
@@ -72,6 +74,11 @@ class AllocationTests(unittest.TestCase):
             self.assertEqual(plan['video_tokens'],profile.estimate_adaptive_video(10,
                 frames=plan['frames'],pixels_per_frame=plan['resolution'][0]*plan['resolution'][1],
                 include_audio=False,frame_width=plan['resolution'][0],frame_height=plan['resolution'][1]))
+
+    def test_quality_floor_tracks_the_attainable_pixel_envelope_for_large_sources(self):
+        plan = allocate(renderer(), media(7680,4320), (0,10), ExecutionPolicy(frames=128,priority="temporal"))
+        self.assertLessEqual(plan["minimum_resolution"][0]*plan["minimum_resolution"][1],262144/16)
+        self.assertTrue(all(a>=b for a,b in zip(plan["resolution"],plan["minimum_resolution"])))
 
     def test_unfit_minimum_does_not_overrun_budget(self):
         from video_os.core.errors import BudgetExceeded

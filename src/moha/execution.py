@@ -4,6 +4,7 @@ import math
 from dataclasses import asdict, dataclass
 
 EXECUTION_POLICY = "moha_source_relative_v1"
+MIN_DETAIL_FRACTION = 0.25
 GOALS = ("default", "general", "presence", "attribute", "count", "text", "speech", "relation", "sequence")
 CHOICES = {"frames": ("auto", 32, 64, 128), "source_scale": (0.5, 0.75, 1.0),
            "priority": ("temporal", "spatial", "balanced")}
@@ -44,6 +45,13 @@ def allocate(renderer, media, window, policy):
     target = min(target, 128, renderer.budget.f_view, max(1, math.ceil(duration * media.frame_rate)))
     if renderer.token_profile is None:
         raise ValueError("source-relative allocation requires a calibrated token profile")
+    # Share a meaningful quality floor across priorities. Use the best shape
+    # allowed by this source/scale and the hard single-frame pixel envelope,
+    # so high-resolution sources remain usable under a smaller p_view budget.
+    ceiling = renderer._output_resolution(media.width, media.height, frames=1,
+        allow_upscale=False, pixel_cap_override=max(4, math.floor(
+            media.width * media.height * policy.source_scale ** 2)))
+    minimum = tuple(max(2, int(edge * MIN_DETAIL_FRACTION) // 2 * 2) for edge in ceiling)
     caps = []
     for step in range(128):
         scale = policy.source_scale * 0.9 ** step
@@ -60,6 +68,8 @@ def allocate(renderer, media, window, policy):
                 resolution = renderer._output_resolution(media.width, media.height,
                     frames=frames, allow_upscale=False, pixel_cap_override=cap)
             except BudgetExceeded:
+                continue
+            if any(actual < floor for actual, floor in zip(resolution, minimum)):
                 continue
             if (frames, resolution) in seen:
                 continue
@@ -84,6 +94,7 @@ def allocate(renderer, media, window, policy):
     _, frames, resolution, cap, tokens = best
     return {"policy": EXECUTION_POLICY, "requested": policy.to_dict(),
             "source_resolution": [media.width, media.height], "target_frames": target,
+            "minimum_resolution": list(minimum), "minimum_detail_fraction": MIN_DETAIL_FRACTION,
             "frames": frames, "resolution": list(resolution), "video_tokens": tokens,
             "source_scale_realized": min(resolution[0]/media.width, resolution[1]/media.height),
             "window": [start, end], "source_sha256": media.source_sha256,
