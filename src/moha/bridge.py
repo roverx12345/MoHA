@@ -204,7 +204,7 @@ def prepare(config_path, repo):
     allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers"}
     if required - set(config) or set(config) - allowed or config["schema"] != "moha_config_v1":
         raise ValueError("unknown or missing MOHA configuration fields/schema")
-    diagnosis_workers = config.get("diagnosis_workers", 4)
+    diagnosis_workers = config.get("diagnosis_workers", 8)
     positive_int(diagnosis_workers, "diagnosis_workers")
     runtime_root = activate_runtime(config["runtime"])
     from video_os.core.budget import BudgetContract

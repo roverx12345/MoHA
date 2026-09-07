@@ -58,13 +58,13 @@ class EndpointTests(unittest.TestCase):
                 "http://o0/v1,http://o1/v1,http://o2/v1", self.budget())
         create.assert_not_called()
 
-    def test_prepare_and_build_isolate_four_judges_and_original_probe_clients(self):
+    def test_prepare_and_build_isolate_eight_judges_and_original_probe_clients(self):
         cfg = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
         cfg["models"] = self.models("http://p0/v1,http://p1/v1")
         cfg["specialists"] = []
         cfg.pop("image")
         cfg.pop("asr")
-        cfg.pop("diagnosis_workers")  # Future configs default to four workers.
+        cfg.pop("diagnosis_workers")  # Future configs default to eight workers.
         cfg["observer"]["key"] = {"local": True}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
@@ -75,9 +75,9 @@ class EndpointTests(unittest.TestCase):
                  patch("moha.bridge.source_identity", return_value={}), patch("moha.bridge._snapshot", return_value={}):
                 prepared = prepare(path, Path(tmp))
             adapters = prepared["clients"]["judges"] + prepared["clients"]["probe_judges"]
-            self.assertEqual(len(prepared["clients"]["judges"]), 4)
+            self.assertEqual(len(prepared["clients"]["judges"]), 8)
             self.assertEqual(len(prepared["clients"]["probe_judges"]), 2)
-            self.assertEqual(len({id(c) for c in adapters}), 6)
+            self.assertEqual(len({id(c) for c in adapters}), 10)
             with RunStore(Path(tmp) / "run", {}) as store, patch("moha.observer.ObserverService") as service:
                 service.side_effect = [unittest.mock.Mock(), unittest.mock.Mock()]
                 cal = build(prepared, store)

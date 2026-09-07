@@ -54,7 +54,7 @@
   service/client per lane, stable sample-index assignment, and at most one active
   episode per lane. Only the coordinator makes calibration decisions. Stop new
   submissions on errors, preserve completed caches, and probe on the sample's lane.
-- Use bounded, independent Judge workers for trace diagnoses (default four).
+- Use bounded, independent Judge workers for trace diagnoses (default eight).
   Keep probe services/verdict clients serial within the original episode lane;
   restore manifest order before the coordinator freezes votes and checks health.
   Cache each successful diagnosis and stop new submissions on unexpected errors.

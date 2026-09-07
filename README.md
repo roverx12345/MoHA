@@ -38,7 +38,7 @@ MoHA 与 Video OS 分别记录 Git 提交、源码哈希和干净状态。`docto
 
 校准与验证的 episode 批次共用这一条执行路径；单端点就是一路，无另一个串行实现。计票和 promotion 由一个协调器顺序决策；observer probe 使用该 calibration 样本原分配的端点。任一路失败后不再提交新 episode，另一条已在执行的 episode 完成落盘后退出，续跑复用成功缓存。`workers/0.json`、`workers/1.json` 记录每路当前样本与时间，`progress.json` 由协调器更新总进度；完整 attempt 记录端点归属。
 
-外部 LLM 诊断由 `diagnosis_workers` 控制，默认 `4`，设为 `1` 即为串行。它独立于 planner/observer 的执行路数：每个 worker 使用独立 Judge client，同一时刻最多处理一条失败 trace，包含初次诊断、probe 和最终局部提案；默认最多四条在途，无待执行请求积压。probe 与其判定使用样本原执行路的独立 service/client，并按路互斥，因此增加诊断 worker 不会增加同一路 observer 的并发。完成结果按原样本顺序汇总，一样保留每样本一票、健康门限和验证决策；成功诊断立即写入不可变缓存。异常退出时停止新提交，已在途结果仍可落盘，续跑只补缺失或失败的诊断。`diagnosis_workers/<序号>.json` 记录各 worker 状态，`progress.json` 显示诊断进度，`doctor` 显示并发数。并发设置进入运行身份，已有冻结实验继续使用自己的代码与配置。
+外部 LLM 诊断由 `diagnosis_workers` 控制，默认 `8`，设为 `1` 即为串行。它独立于 planner/observer 的执行路数：每个 worker 使用独立 Judge client，同一时刻最多处理一条失败 trace，包含初次诊断、probe 和最终局部提案；默认最多八条在途，无待执行请求积压。probe 与其判定使用样本原执行路的独立 service/client，并按路互斥，因此增加诊断 worker 不会增加同一路 observer 的并发。完成结果按原样本顺序汇总，一样保留每样本一票、健康门限和验证决策；成功诊断立即写入不可变缓存。异常退出时停止新提交，已在途结果仍可落盘，续跑只补缺失或失败的诊断。`diagnosis_workers/<序号>.json` 记录各 worker 状态，`progress.json` 显示诊断进度，`doctor` 显示并发数。并发设置进入运行身份，已有冻结实验继续使用自己的代码与配置。
 
 `observer.py` 在固定感知服务上补充一条输出恢复路径：首次请求保持原样，仅在 observation JSON 无效、`finish_reason=length` 或支持时间越出当前窗口时，使用原媒体、目标、采样和模型重试一次。重试提示按事件/变化报告，合并连续不变的状态，保留真实重复动作与冲突；输出上限为 2048 token（原显式上限更低时沿用更低值）。不对有效 observation 做事后去重、裁剪或改写。原始输出与两次请求哈希均留档，失败输出也计入 provider token 总数，重试另计一次感知与媒体成本。
 

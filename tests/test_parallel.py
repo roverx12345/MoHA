@@ -136,9 +136,9 @@ class ParallelTests(unittest.TestCase):
             cal.batch(Harness(), [self.samples[0], self.samples[0]], 0, "calibration")
         self.assertEqual(runner.calls, [])
 
-    def test_four_diagnoses_overlap_with_independent_judges_and_ordered_votes(self):
-        self.samples = [sample(f"cal{i}") for i in range(8)]
-        barrier = threading.Barrier(4, timeout=3)
+    def test_eight_diagnoses_overlap_with_independent_judges_and_ordered_votes(self):
+        self.samples = [sample(f"cal{i}") for i in range(16)]
+        barrier = threading.Barrier(8, timeout=3)
         class Concurrent(DemoJudge):
             def __init__(self):
                 self.calls = []
@@ -148,20 +148,20 @@ class ParallelTests(unittest.TestCase):
                     raise AssertionError("a Judge client was shared concurrently")
                 try:
                     self.calls.append(unpack(payload)["sample_id"])
-                    barrier.wait()  # Requires four actual simultaneous calls.
+                    barrier.wait()  # Requires eight actual simultaneous calls.
                     return super().diagnose(payload, available)
                 finally:
                     self.lock.release()
-        judges = [Concurrent() for _ in range(4)]
+        judges = [Concurrent() for _ in range(8)]
         cal = self.calibrator([Runner(), Runner()], judges=judges)
         episodes = cal.batch(Harness(), self.samples, 0, "calibration")
         results = cal.diagnose(Harness(), episodes, [])
         self.assertEqual([r["sample_id"] for r in results], [s.sample_id for s in self.samples])
-        self.assertEqual([len(j.calls) for j in judges], [2] * 4)
-        self.assertEqual(self.store.read("progress.json")["parallel_workers"], 4)
-        self.assertEqual(self.store.read("progress.json")["completed"], 8)
+        self.assertEqual([len(j.calls) for j in judges], [2] * 8)
+        self.assertEqual(self.store.read("progress.json")["parallel_workers"], 8)
+        self.assertEqual(self.store.read("progress.json")["completed"], 16)
         self.assertEqual(cal.diagnose(Harness(), episodes, []), results)
-        self.assertEqual([len(j.calls) for j in judges], [2] * 4)  # All cached.
+        self.assertEqual([len(j.calls) for j in judges], [2] * 8)  # All cached.
         with self.assertRaisesRegex(ValueError, "completed artifact"):
             self.calibrator([Runner(), Runner()], judges=[DemoJudge()])
 
