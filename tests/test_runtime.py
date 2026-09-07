@@ -208,6 +208,23 @@ class RuntimeTests(unittest.TestCase):
         messages[-1]["content"] = "The answer is A."
         self.assertEqual(EpisodeRunner(Service(), Planner(messages)).run(Harness(), sample("cal"), 0).answer, "A")
 
+    def test_explanatory_json_is_recovered_without_an_extra_call(self):
+        for final, expected, status in [
+            ('The evidence supports the conclusion.\n{"status":"answered","answer":"A"}', "A", "completed"),
+            ('The answer is B was an earlier guess.\n```json\n{"status":"abstained","answer":null}\n```', None, "abstained"),
+        ]:
+            with self.subTest(final=final):
+                messages = script()
+                messages[-1]["content"] = final
+                service, planner = Service(), Planner(messages)
+                result = EpisodeRunner(service, planner).run(Harness(max_steps=3), sample("cal"), 0)
+                self.assertEqual((result.status, result.answer), (status, expected))
+                self.assertEqual(result.raw["answer_extraction"]["method"], "terminal_json")
+                self.assertEqual(result.raw["terminal_answer_status"], "answered" if expected else "abstained")
+                self.assertEqual(len(planner.calls), 3)
+                self.assertEqual(planner.calls[-1]["tool_choice"], "none")
+                self.assertTrue(all("response_format" not in c for c in planner.calls))
+
     def test_planner_outage_preserves_auditable_error_episode(self):
         from moha.store import RunStore
         with tempfile.TemporaryDirectory() as tmp, RunStore(Path(tmp)/"run", {}) as store:
@@ -255,6 +272,45 @@ class RuntimeTests(unittest.TestCase):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "run these integration tests in the Video OS environment")
 class WireTests(unittest.TestCase):
+    def test_gpt_and_qwen_keep_the_same_post_contract_for_terminal_json(self):
+        from video_os.agent.planner import OpenAICompatiblePlannerClient
+        from video_os.core.budget import BudgetContract
+        from video_os.core.dispatch import ProviderRole
+        from video_os.providers.client import ProviderSpec, TransportResponse
+
+        class Transport:
+            def __init__(self):
+                self.calls, self.responses = [], script()
+                self.responses[-1]["content"] = 'Explanation.\n{"status":"answered","answer":"A"}'
+
+            def post(self, **kwargs):
+                self.calls.append(json.loads(kwargs["body"]))
+                message = self.responses.pop(0)
+                body = {"id": "unit", "model": "unit", "choices": [{"message": message,
+                        "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
+                        "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}}
+                return TransportResponse(status=200, body=json.dumps(body).encode())
+
+        wires = []
+        for model in ("gpt-5.5", "Qwen3.5-9B"):
+            transport = Transport()
+            planner = OpenAICompatiblePlannerClient(
+                spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model=model),
+                api_key="unit-key", budget=BudgetContract(
+                    c_text_max=None, c_sensor_max=None, b_control=None, b_video=8192,
+                    b_state=None, b_task=None, f_view=32, p_view=147456, p_call=1572864,
+                    k_look=8, k_compare=2, f_episode=256, b_video_episode=65536), transport=transport)
+            result = EpisodeRunner(Service(), planner).run(Harness(max_steps=3), sample("cal"), 0)
+            self.assertEqual((result.status, result.answer), ("completed", "A"))
+            self.assertEqual(len(transport.calls), 3)
+            final = transport.calls[-1]
+            self.assertEqual(final["tool_choice"], "none")
+            self.assertEqual(len(final["tools"]), 2)
+            self.assertNotIn("response_format", final)
+            self.assertNotIn("chat_template_kwargs", final)
+            wires.append([{k: v for k, v in c.items() if k != "model"} for c in transport.calls])
+        self.assertEqual(wires[0], wires[1])
+
     def test_reserved_final_call_disables_tools_on_actual_provider_wire(self):
         from video_os.agent.planner import OpenAICompatiblePlannerClient
         from video_os.core.budget import BudgetContract

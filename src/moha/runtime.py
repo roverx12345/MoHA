@@ -6,6 +6,7 @@ from .models import Harness, Sample, canonical
 from .records import normalize, visible_observations
 from .context import PLANNER_CONTEXT_POLICY, bounded_history
 from .memory import MEMORY_POLICY, ObservationMemory
+from .answers import ANSWER_PARSING_POLICY, terminal_json_answer
 
 
 PLANNER_COMPLETION_POLICY = "moha_reserved_final_call_v1"
@@ -76,6 +77,7 @@ class EpisodeRunner:
         raw["planner_context_policy"] = PLANNER_CONTEXT_POLICY
         raw["planner_tool_policy"] = PLANNER_TOOL_POLICY
         raw["planner_completion_policy"] = PLANNER_COMPLETION_POLICY
+        raw["answer_parsing_policy"] = ANSWER_PARSING_POLICY
         raw["memory_policy"] = MEMORY_POLICY if harness.memory else None
         raw["execution_lane"] = {"index": self.lane, "observer_endpoint": getattr(self.service, "base_url", None)}
 
@@ -160,8 +162,14 @@ class EpisodeRunner:
                     elif final.get("answer") in sample.task["options"]:
                         answer, extraction = {"status": "answered", "answer": final["answer"]}, {"method": "structured"}
                     else:
-                        answer, extraction = _llm_extract_evaluation_answer(raw, extractor=self.extractor)
+                        recovered = terminal_json_answer(message.get("content"), sample.task["options"])
+                        if recovered is not None:
+                            answer, extraction = recovered, {"method": "terminal_json", "attempted": False,
+                                                             "policy": ANSWER_PARSING_POLICY}
+                        else:
+                            answer, extraction = _llm_extract_evaluation_answer(raw, extractor=self.extractor)
                     raw["answer"], raw["answer_extraction"] = answer.get("answer"), extraction
+                    raw["terminal_answer_status"] = answer.get("status")
                     if answer.get("status") == "abstained":
                         raw["status"] = "abstained"
                     emit(kind="terminal", step=step, message=message, answer=answer)

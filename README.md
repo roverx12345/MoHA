@@ -144,3 +144,23 @@ PYTHONPATH=src:/path/to/pinned/video-os python -m unittest discover -s tests -v
 测试覆盖证据去重的还原、冲突保留、上下文可见性、等权计票、同票排序、拒绝后续选、提案缓存与校准隔离、原有 schema/预算/缓存/验证门限，以及真实 Video OS registry 的离线集成。
 
 源码最初来自父仓库提交 `bc83ebb` 中的 MoHA 重写。现在的权威源码是这个独立仓库；父目录不再跟踪这里的文件。
+
+### Terminal answer compatibility
+
+All planners retain the same OpenAI-compatible POST contract and final-call
+budget. No JSON Schema constraint or extra answer-generation call is added.
+A complete answer JSON object at the end of explanatory text or a JSON code
+fence can be recovered after the normal structured parse. This shared fallback
+validates option labels and explicit abstention, rejects duplicate JSON keys,
+and does not read answers from tool-call or reasoning markup. Existing plain
+JSON and natural-language answer handling remains unchanged. Trajectories
+record answer_parsing_policy, answer_extraction, and terminal_answer_status;
+a live process or a completed episode alone does not establish output-format
+health.
+
+For Qwen served by vLLM, configure the server to honor the existing
+tool_choice=none request with --exclude-tools-when-tool-choice-none.
+The configured thinking mode may be set through
+--default-chat-template-kwargs '{"enable_thinking":false}' so the host does
+not need a Qwen-specific request field. Service changes require a fresh run;
+keep old trajectories and validate historical parsing offline.

@@ -1,0 +1,58 @@
+"""Recover an explicit terminal answer without making another model call."""
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Collection
+
+
+ANSWER_PARSING_POLICY = "moha_terminal_json_v1"
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def terminal_json_answer(content: object, option_labels: Collection[str]) -> dict | None:
+    """Read a complete answer object at the end of the assistant's text.
+
+    Explanatory prose or a JSON code fence may precede the object. Never infer
+    an option from the explanation, accept an object inside tool/reasoning
+    markup, or repair malformed JSON. Existing structured and text-pattern
+    handling remains the caller's responsibility.
+    """
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if text.endswith("```"):
+        opening = text.rfind("```", 0, len(text) - 3)
+        if opening < 0:
+            return None
+        language, separator, body = text[opening + 3:-3].partition("\n")
+        if not separator or language.strip().lower() not in ("", "json"):
+            return None
+        text = text[:opening] + body.rstrip()
+    decoder = json.JSONDecoder(object_pairs_hook=_unique_object)
+    for match in re.finditer(r"\{", text):
+        start = match.start()
+        prefix = text[:start].lower()
+        if any(prefix.rfind("<" + tag + ">") > prefix.rfind("</" + tag + ">")
+               for tag in ("tool_call", "think")):
+            continue
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except (ValueError, json.JSONDecodeError):
+            continue
+        if text[end:].strip() or not isinstance(value, dict):
+            continue
+        status, answer = value.get("status"), value.get("answer")
+        if status == "answered" and isinstance(answer, str) and answer in option_labels:
+            return {"status": "answered", "answer": answer}
+        if status == "abstained" and "answer" in value and answer is None:
+            return {"status": "abstained", "answer": None}
+    return None
