@@ -40,6 +40,7 @@ def main(argv=None):
         repo = Path(__file__).resolve().parents[2]
         prepared = prepare(args.config, repo)
         if args.command == "doctor":
+            from .serving import media_io_kwargs
             result = {"inputs_valid": True, "clean_worktree": not prepared["identity"]["source"]["dirty"],
                       "clean_runtime": not prepared["identity"]["runtime"]["dirty"],
                       "runtime_commit": prepared["identity"]["runtime"]["commit"],
@@ -48,6 +49,10 @@ def main(argv=None):
                       "execution_lanes": list(prepared["observer_endpoints"]),
                       "planner_endpoints": list(prepared["planner_endpoints"]),
                       "diagnosis_workers": len(prepared["clients"]["judges"]),
+                      "observer_media_loading": {
+                          "required_media_io_kwargs": media_io_kwargs(prepared["config"])
+                              if prepared["budget"].f_view is not None else None,
+                          "server_verified": False},
                       "available_catalog": prepared["allowed_ids"], "model_calls": 0,
                       "configured_specialists": {
                           "ocr": prepared["config"]["image"]["spec"]["model"] if "ocr" in prepared["config"].get("specialists", []) else None,
