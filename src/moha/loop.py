@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+from threading import Lock
 from .catalog import catalog
 from .evaluate import checked, compare
 from .models import Episode, Harness, Sample, ValidationPolicy, check_splits, digest, positive_int
@@ -30,7 +31,7 @@ class SearchPolicy:
 
 
 class Calibrator:
-    def __init__(self, *, runners, judge, store: RunStore,
+    def __init__(self, *, runners, judges, store: RunStore,
                  calibration: list[Sample], validation: list[Sample],
                  initial: Harness = Harness(), search: SearchPolicy = SearchPolicy(),
                  validation_policy: ValidationPolicy = ValidationPolicy(), p_view: int | None = None,
@@ -42,7 +43,13 @@ class Calibrator:
         self.resolvers = tuple(resolvers) if resolvers is not None else (None,) * len(self.runners)
         if len(self.resolvers) != len(self.runners):
             raise ValueError("probe resolvers must match execution lanes")
-        self.judge, self.store = judge, store
+        self.judges = tuple(judges)
+        if not self.judges or len({id(j) for j in self.judges}) != len(self.judges):
+            raise ValueError("each diagnosis worker requires an independent judge")
+        # A probe keeps its original episode service and verdict client. Only
+        # one diagnosis may use either at a time, even with more Judge workers.
+        self.probe_locks = [Lock() for _ in self.runners]
+        self.store = store
         self.calibration, self.validation = calibration, validation
         self.search, self.validation_policy, self.p_view = search, validation_policy, p_view
         all_items = catalog()
@@ -53,7 +60,8 @@ class Calibrator:
                     "calibration": [s.id for s in calibration], "heldout": [s.id for s in validation],
                     "catalog": [x.to_dict() for x in self.catalog.values()], "p_view": p_view,
                     "observer_probes": any(r is not None for r in self.resolvers), "adaptation": "judge_uniform_vote_v1",
-                    "episode_schedule": {"rule": "sample_index_mod_lanes_v1", "lanes": len(self.runners)}}
+                    "episode_schedule": {"rule": "sample_index_mod_lanes_v1", "lanes": len(self.runners)},
+                    "diagnosis_schedule": {"rule": "bounded_trace_workers_v1", "workers": len(self.judges)}}
         self.store.write("experiment.json", identity, immutable=True)
         self.state = self.store.read("checkpoint.json") or {
             "round": 0, "attempt": 0, "harness": initial.to_dict(), "history": [],
@@ -119,28 +127,33 @@ class Calibrator:
                     launch(lane)
         return checked(results, samples, harness, repeat)
 
-    def diagnose(self, harness: Harness, episodes: list[Episode], available) -> list[dict]:
-        diagnoses = []
-        for index, (sample, episode) in enumerate(zip(self.calibration, episodes)):
-            if episode.correct:
-                continue
+    def _diagnosis(self, worker, index, harness, sample, episode, available):
+        lane = index % len(self.runners)
+        judge = self.judges[worker]
+        state = {"worker": worker, "probe_lane": lane, "sample_id": sample.sample_id,
+                 "harness_id": harness.id, "round": self.state["round"], "status": "running",
+                 "started_at": datetime.now(timezone.utc).isoformat()}
+        self.store.write(f"diagnosis_workers/{worker}.json", state)
+        try:
             key = digest({"harness": harness.id, "sample": sample.id, "episode": episode.to_dict(),
                           "round": self.state["round"], "catalog": [c.to_dict() for c in available]})
             path = f"diagnoses/{key}.json"
             result = self.store.read(path)
+            state["cached"] = result is not None
             if result is None:
                 payload = diagnosis_view(episode, sample, harness)
-                result = self.judge.diagnose(payload, available)
+                result = judge.diagnose(payload, available)
                 if result.get("status") == "valid" and result.get("failure") == "observer":
-                    resolver = self.resolvers[index % len(self.runners)]
+                    resolver = self.resolvers[lane]
                     if resolver is None:
                         result["observer_resolution"] = {"status": "unavailable"}
                     else:
-                        result["observer_resolution"] = resolver.resolve(sample, harness, episode, result)
+                        with self.probe_locks[lane]:
+                            result["observer_resolution"] = resolver.resolve(sample, harness, episode, result)
                         if result["observer_resolution"].get("status") == "error":
                             result["status"] = "error"
                     if result.get("status") == "valid":
-                        proposal = self.judge.recommend(payload, result, available)
+                        proposal = judge.recommend(payload, result, available)
                         result["observer_proposal"] = proposal
                         if proposal["status"] == "error":
                             result["status"] = "error"
@@ -151,7 +164,43 @@ class Calibrator:
                     self.store.record_error("diagnosis", result)
                 else:
                     self.store.write(path, result, immutable=True)
-            diagnoses.append(result)
+            state.update(status="completed", diagnosis_status=result.get("status"))
+            return result
+        except BaseException as exc:
+            state.update(status="error", error_type=type(exc).__name__)
+            raise
+        finally:
+            state["finished_at"] = datetime.now(timezone.utc).isoformat()
+            self.store.write(f"diagnosis_workers/{worker}.json", state)
+
+    def diagnose(self, harness: Harness, episodes: list[Episode], available) -> list[dict]:
+        failures = [(i, s, e) for i, (s, e) in enumerate(zip(self.calibration, episodes)) if not e.correct]
+        remaining, pending, results = iter(failures), {}, {}
+        # One active trace per independent Judge; no queued backlog. Unexpected
+        # exceptions stop submissions while other in-flight traces save caches.
+        with ThreadPoolExecutor(max_workers=len(self.judges)) as pool:
+            def launch(worker):
+                item = next(remaining, None)
+                if item is not None:
+                    index, sample, episode = item
+                    pending[pool.submit(self._diagnosis, worker, index, harness, sample, episode, available)] = (worker, index)
+            for worker in range(len(self.judges)):
+                launch(worker)
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                free = []
+                for future in done:
+                    worker, index = pending.pop(future)
+                    results[index] = future.result()
+                    self.store.write("progress.json", {"phase": "diagnosis", "completed": len(results),
+                        "total": len(failures), "harness_id": harness.id, "round": self.state["round"],
+                        "sample_id": results[index]["sample_id"], "parallel_workers": len(self.judges),
+                        "status": results[index].get("status")})
+                    free.append(worker)
+                for worker in free:
+                    launch(worker)
+        # Completion order must not affect frozen votes, ranking or health gates.
+        diagnoses = [results[i] for i, _, _ in failures]
         if diagnoses:
             valid = sum(x.get("status") == "valid" and x.get("failure") != "unresolved" for x in diagnoses)
             errors = sum(x.get("status") == "error" for x in diagnoses)

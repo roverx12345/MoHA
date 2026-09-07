@@ -1,5 +1,6 @@
 {
   "schema": "moha_config_v1",
+  "diagnosis_workers": 4,
   "media_root": "/home/jianghan/.cache/huggingface/hub/datasets--TencentARC--Video-Holmes/snapshots/02fcfc696a7e101bb0e3b8d620280bda717db3d0/video",
   "calibration_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/calibration_input_manifest.json",
   "validation_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/validation_input_manifest.json",

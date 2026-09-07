@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from .catalog import catalog
 from .loop import Calibrator, SearchPolicy
-from .models import Harness, Sample, ValidationPolicy, canonical, check_splits, digest
+from .models import Harness, Sample, ValidationPolicy, canonical, check_splits, digest, positive_int
 from .probes import ObserverResolver, ProbeRunner
 from .roles import Judge
 from .runtime import EpisodeRunner
@@ -201,9 +201,11 @@ def lane_clients(models, observer_url, budget):
 def prepare(config_path, repo):
     config = read_object(config_path)
     required = {"schema", "runtime", "media_root", "calibration_manifest", "validation_manifest", "budget", "models", "observer"}
-    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension"}
+    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers"}
     if required - set(config) or set(config) - allowed or config["schema"] != "moha_config_v1":
         raise ValueError("unknown or missing MOHA configuration fields/schema")
+    diagnosis_workers = config.get("diagnosis_workers", 4)
+    positive_int(diagnosis_workers, "diagnosis_workers")
     runtime_root = activate_runtime(config["runtime"])
     from video_os.core.budget import BudgetContract
     initial = Harness.from_dict(config.get("initial", {}))
@@ -231,7 +233,8 @@ def prepare(config_path, repo):
     if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "extractor"}:
         raise ValueError("models require planner/judge and optionally extractor; selection is deterministic")
     planner_endpoints, endpoints, lanes = lane_clients(models, config["observer"]["base_url"], budget)
-    clients = {"judge": text_client(models["judge"], budget, structured=True),
+    clients = {"judges": [text_client(models["judge"], budget, structured=True) for _ in range(diagnosis_workers)],
+               "probe_judges": [text_client(models["judge"], budget, structured=True) for _ in lanes],
                "lanes": lanes}
     credential(config["observer"]["key"])
     if "image" in config:
@@ -292,10 +295,9 @@ def build(prepared, store):
             service.asr_perception_model = asr["spec"]["model"]
         runners.append(EpisodeRunner(service, clients["planner"], extractor=clients.get("extractor"),
             asr_backend="whisper" if asr else observer["backend"], store=store, lane=lane))
-    judge_client = TextRoleClient(prepared["clients"]["judge"])
-    return Calibrator(runners=runners, judge=Judge(judge_client),
+    return Calibrator(runners=runners, judges=[Judge(TextRoleClient(c)) for c in prepared["clients"]["judges"]],
         store=store, calibration=prepared["calibration"], validation=prepared["validation"],
         initial=prepared["initial"], search=prepared["search"], validation_policy=prepared["policy"],
         p_view=prepared["budget"].p_view, allowed_ids=prepared["allowed_ids"],
-        resolvers=[ObserverResolver(ProbeRunner(r.service, store), judge_client, p_view=prepared["budget"].p_view)
-                   for r in runners])
+        resolvers=[ObserverResolver(ProbeRunner(r.service, store), TextRoleClient(c), p_view=prepared["budget"].p_view)
+                   for r, c in zip(runners, prepared["clients"]["probe_judges"])])

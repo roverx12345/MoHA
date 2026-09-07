@@ -126,7 +126,7 @@ class StoreAndLoopTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "run"
 
     def loop(self, store, **kwargs):
-        params = dict(runners=[DemoRunner()], judge=DemoJudge(), store=store,
+        params = dict(runners=[DemoRunner()], judges=[kwargs.pop("judge", DemoJudge())], store=store,
                       calibration=[sample("cal")], validation=[sample("val")],
                       validation_policy=ValidationPolicy(bootstrap_samples=30))
         params.update(kwargs)

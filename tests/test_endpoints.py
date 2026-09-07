@@ -3,8 +3,11 @@ import copy
 import json
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import patch
-from moha.bridge import lane_clients
+from moha.bridge import build, lane_clients, prepare
+from moha.demo import sample
+from moha.store import RunStore
 
 try:
     from video_os.core.budget import BudgetContract
@@ -54,3 +57,43 @@ class EndpointTests(unittest.TestCase):
             lane_clients(self.models("http://p0/v1,http://p1/v1"),
                 "http://o0/v1,http://o1/v1,http://o2/v1", self.budget())
         create.assert_not_called()
+
+    def test_prepare_and_build_isolate_four_judges_and_original_probe_clients(self):
+        cfg = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
+        cfg["models"] = self.models("http://p0/v1,http://p1/v1")
+        cfg["specialists"] = []
+        cfg.pop("image")
+        cfg.pop("asr")
+        cfg.pop("diagnosis_workers")  # Future configs default to four workers.
+        cfg["observer"]["key"] = {"local": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(cfg))
+            splits = [([sample(name)], {}, {"samples": [{"media_sha256": name}]}) for name in ("cal", "val")]
+            with patch("moha.bridge.activate_runtime", return_value=Path("/runtime")), \
+                 patch("moha.bridge.load_split", side_effect=splits), \
+                 patch("moha.bridge.source_identity", return_value={}), patch("moha.bridge._snapshot", return_value={}):
+                prepared = prepare(path, Path(tmp))
+            adapters = prepared["clients"]["judges"] + prepared["clients"]["probe_judges"]
+            self.assertEqual(len(prepared["clients"]["judges"]), 4)
+            self.assertEqual(len(prepared["clients"]["probe_judges"]), 2)
+            self.assertEqual(len({id(c) for c in adapters}), 6)
+            with RunStore(Path(tmp) / "run", {}) as store, patch("moha.observer.ObserverService") as service:
+                service.side_effect = [unittest.mock.Mock(), unittest.mock.Mock()]
+                cal = build(prepared, store)
+                self.assertEqual([j.client.adapter for j in cal.judges], prepared["clients"]["judges"])
+                self.assertEqual([r.role.client.adapter for r in cal.resolvers], prepared["clients"]["probe_judges"])
+                self.assertEqual([r.runner.service for r in cal.resolvers], [r.service for r in cal.runners])
+
+
+class DiagnosisConfigTests(unittest.TestCase):
+    def test_invalid_worker_count_fails_before_runtime_or_client_setup(self):
+        cfg = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            for value in (0, -1, True, 2.5, "4", None):
+                cfg["diagnosis_workers"] = value
+                path.write_text(json.dumps(cfg))
+                with patch("moha.bridge.activate_runtime") as activate, self.assertRaisesRegex(ValueError, "positive integer"):
+                    prepare(path, Path(tmp))
+                activate.assert_not_called()
