@@ -32,12 +32,22 @@ class Service:
     def overview(self, session_id, **kwargs):
         self.calls.append(("overview", kwargs))
         return {"summary": "coarse orientation"}
+    def plan_observer_execution(self, session_id, window, policy):
+        from test_execution import renderer, media
+        from moha.execution import allocate
+        return allocate(renderer(), media(), window, policy)
     def inspect_window(self, session_id, **kwargs):
         self.calls.append(("observe", kwargs))
-        fps, resolution = kwargs["fps"], kwargs["resolution"]
+        from test_execution import renderer
+        shape = kwargs["experiment_render"]
+        frames = shape["requested_frames"]
+        resolution = renderer()._output_resolution(640, 360, frames=frames,
+            allow_upscale=False, pixel_cap_override=shape["pixel_cap_override"])
+        duration = kwargs["end_seconds"]-kwargs["start_seconds"]
         return {"observation": {"observation_id": "obs1", "facts": [{"fact": "A person jumps.", "support_time_seconds": [12, 13]}]},
-                "view": {"view_id": "v1", "resolution": [resolution*2, resolution], "encoded_video_fps": fps,
-                         "modalities": ["video", "audio"], "input_token_accounting": {"sampled_frames": int(10*fps)}},
+                "view": {"view_id": "v1", "resolution": list(resolution), "encoded_video_fps": frames/duration,
+                         "source_sha256": "unit-source", "frame_timestamps_seconds": [kwargs["start_seconds"]+i*duration/frames for i in range(frames)],
+                         "modalities": ["video", "audio"], "input_token_accounting": {"sampled_frames": frames}},
                 "budget": {"look_used": 1}}
     def receipt(self, session_id):
         return {"session_id": session_id, "budget_ledger": {"frames_used": 10, "video_tokens_used": 256,
@@ -86,13 +96,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_modules_and_execution_reach_existing_runtime(self):
         service, planner = Service(), Planner(script())
-        harness = Harness(overview=True, memory=True, verification=True,
-                          execution=(("default", "default"), ("general", "dense_temporal")))
+        harness = Harness.from_dict({"overview": True, "memory": True, "verification": True,
+            "execution": {"default": {}, "general": {"frames": 64}}})
         result = EpisodeRunner(service, planner).run(harness, sample("cal"), 0)
         self.assertEqual(result.status, "completed", result.raw)
         self.assertIn("overview", [c[0] for c in service.calls])
         observed = next(c[1] for c in service.calls if c[0] == "observe")
-        self.assertEqual(observed["fps"], 2.0)
+        self.assertEqual(observed["experiment_render"]["requested_frames"], 64)
         context = json.loads(planner.calls[-1]["messages"][-1]["content"])
         self.assertTrue(context["evidence_memory"])
         self.assertIn("advisory_verification", context)
@@ -261,12 +271,14 @@ class RuntimeTests(unittest.TestCase):
             "goal": {"type": "general", "target": "person action"},
             "requested_execution": {"fps": 1, "resolution": 384, "modalities": ["video", "audio"], "prompt_profile": "generic"}}
         service = Service()
-        result = ProbeRunner(service).observe(sample("cal"), original, "dense_temporal")
+        from moha.observer import PolicyExecution
+        from moha.execution import ExecutionPolicy
+        result = ProbeRunner(service).observe(sample("cal"), original, PolicyExecution(policy=ExecutionPolicy(frames=64)))
         self.assertEqual(result["status"], "completed", result)
         self.assertEqual([c[0] for c in service.calls], ["begin", "observe"])
         self.assertEqual(service.calls[1][1]["start_seconds"], 10)
         self.assertEqual(service.calls[1][1]["end_seconds"], 20)
-        self.assertEqual(service.calls[1][1]["fps"], 2)
+        self.assertEqual(service.calls[1][1]["experiment_render"]["requested_frames"], 64)
         self.assertNotIn("expected_answer", str(service.calls))
 
 

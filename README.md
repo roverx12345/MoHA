@@ -35,8 +35,8 @@ Video OS 的工具、媒体处理和模型适配器由 `config.runtime.root` 指
 MoHA 与 Video OS 分别记录 Git 提交、源码哈希和干净状态。`doctor` 检查输入、视频哈希与配置，不调用模型；真实推理要求两份代码均已提交。配置只保存凭据文件或环境变量引用，不保存密钥。
 
 新实验模板使用 `f_view=128 / p_view=262144 / p_call=33554432 / b_video=16384`。
-这些是 H0 与所有候选共享的上限；单次帧数仍由窗口、fps、源帧数与预算决定。
-`f_episode=256` 与 `b_video_episode=65536` 继续约束整个 episode，因此并不保证每次观察都能使用 128 帧。
+这些是 H0 与所有候选共享的上限；单次帧数由窗口、目标帧数、源帧数与预算决定。
+固定运行时中的 `f_episode=256` 与 `b_video_episode=65536` 是 episode 累计量的提示目标，不是阻断调用的硬上限。累计消耗继续写入 ledger；单次硬上限与 planner 步数限制保持生效。
 已有冻结配置不从模板继承新值，也不应在原实验中途替换服务的媒体读取规则。
 
 Qwen3-Omni 服务还有独立的 vLLM 视频解码上限，默认 32。`mm_processor_kwargs.fps`
@@ -89,7 +89,36 @@ Planner 用 `video_player_observe(start_seconds, end_seconds, goal)` 直接选�
 
 接口要求有限数值且 `0 <= start_seconds < end_seconds <= duration_seconds`；非法范围返回工具错误供 planner 修正，不静默移动、扩大、裁剪或取整窗口。帧率、分辨率、采样及 observer/specialist 路由仍由 harness 和固定 Video OS 执行层决定，原有媒体与预算约束继续生效。
 
-`tools.py` 只适配时间选择和 schema，复用固定运行时的观察、specialist、预算与 receipt 路径。直接窗口的 receipt 保留实际时间与目标，`candidate_id` 为 `null`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_semantic_windows_v1` 标记此接口。改变时间选择能力需要新实验并重跑 H0，旧的 candidate-only episode 不能作为新接口的基线；既有冻结运行保持原接口。
+`tools.py` 适配时间选择、schema 与 observer 执行策略，复用固定运行时的观察、specialist、预算与 receipt 路径。直接窗口的 receipt 保留实际时间与目标，`candidate_id` 为 `null`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_semantic_windows_v1` 标记此接口。改变时间选择能力需要新实验并重跑 H0，旧的 candidate-only episode 不能作为新接口的基线；既有冻结运行保持原接口。
+
+当前 observer harness 使用 `moha_source_relative_v1`，执行设置按观察目标独立继承默认值：
+
+| 坐标 | 候选值 | 含义 |
+| --- | --- | --- |
+| `frames` | `auto`、32、64、128 | 目标帧数；`auto` 为窗口秒数向上取整，保持原先 1 fps 的请求密度 |
+| `source_scale` | 0.5、0.75、1.0 | 原视频两条边的比例上限，保持宽高比，不上采样 |
+| `priority` | `temporal`、`spatial`、`balanced` | 预算受限时保留时间信息、空间信息，或平衡两者 |
+
+H0 为 `auto / 1.0 / balanced`，所有模型从同一 H0 开始。目标级设置只覆盖写出的字段；
+例如 `{"execution":{"default":{},"text":{"source_scale":0.75}}}` 只改变 text 的空间目标。
+catalog 为八类 typed goal 提供单字段候选，包括 speech；默认值用于继承，不作为全局校准候选。
+帧数和比例是目标上限，最终输入还受源帧数、codec 尺寸、`f_view/p_view/p_call/b_video` 约束。
+
+`execution.py` 在同一可行集合中分配预算：枚举不超过目标值的整数帧数，以及从目标边长比例开始每档乘 0.9 的降采样阶梯。
+时间优先按帧数、空间比例排序；空间优先反过来；均衡模式最大化两项相对目标完成度的较小值，
+同分依次比较完成度总和、空间、时间。预算充足时三种模式得到相同输入。预算不足时允许比例低于目标档位。
+分配使用固定运行时的渲染尺寸与模型 token 估计，再通过其 `experiment_render` 接口执行；不另建媒体或模型适配器。
+Qwen processor 的最小像素要求可能把小画面放大，因此降低源画质不保证降低 token；receipt 分别保存源尺寸、渲染尺寸、帧时间戳和 processor 计量。
+
+固定窗口 probe 先进行不调用模型的分配检查，跳过与基线或已选候选产生相同媒体的配置。
+每条 trace 最多检查一个请求、一份新基线和七个不同的单字段候选（3 个帧数、2 个比例、2 个模式），
+找到 rescue 即停止。每个逻辑观察仍最多进行一次格式修复；全部实际成本入账。
+实际 receipt 再核对源文件、帧时间戳、帧数和完整画面尺寸，不能只按参数名声称发生改变。
+只有得到 rescue 的具体执行候选能进入该 trace 的最终提案；匹配类型的 `no_rescue` 才开放已有 OCR/ASR 路由。
+
+本次改变了 H0 与 observer catalog，必须创建新实验并从 H0 完整校准。旧的字符串预设配置显式拒绝加载，
+不能把旧 profile 或缓存自动转换为新策略。`calibrated/` 中既有结果继续对应其记录的冻结源码与 catalog；
+正在执行的冻结校准及其服务配置不随本次修改改变。
 
 模板中的 `specialists: ["ocr", "asr"]` 让两种 specialist 成为校准候选，H0 的 `harness.specialists` 仍为空。只有对应能力的 observer 失败经过执行设置 probe 后得到 `no_rescue`，Judge 才能为这条 trace 提出该 specialist；最终是否保留仍由独立验证决定。只配置模型不代表已经校准或启用。
 

@@ -42,13 +42,16 @@ class ContractTests(unittest.TestCase):
             changed = item.apply(base).to_dict()
             self.assertLessEqual(sum(changed[k] != v for k, v in base.to_dict().items()), 1)
 
-    def test_noop_pixel_limit_and_inherited_preset(self):
-        high = catalog()["observer.execution.text.high_resolution"]
-        self.assertFalse(high.available(Harness(), 384**2))
-        self.assertTrue(high.available(Harness(), 768**2))
-        inherited = Harness(execution=(("default", "high_resolution"),))
-        self.assertFalse(high.available(inherited))
-        self.assertTrue(catalog()["observer.execution.sequence.dense_temporal"].available(Harness(), 384**2))
+    def test_independent_coordinates_inherit_default_settings(self):
+        base = Harness.from_dict({"execution": {"default": {"frames": 64, "source_scale": 0.75}}})
+        mode = catalog()["observer.execution.text.priority.spatial"]
+        changed = mode.apply(base)
+        self.assertEqual(changed.execution_for_goal("text").to_dict(),
+            {"frames": 64, "source_scale": 0.75, "priority": "spatial"})
+        self.assertEqual(changed.execution_for_goal("sequence"), base.execution_for_goal("sequence"))
+        self.assertFalse(catalog()["observer.execution.text.frames.64"].available(base))
+        self.assertFalse(mode.available(changed))
+        self.assertEqual(Harness.from_dict(changed.to_dict()), changed)
 
 
 class AccountingTests(unittest.TestCase):

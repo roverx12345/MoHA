@@ -88,6 +88,9 @@ def validate_proposal(value, available):
 def eligible_for_trace(available, diagnosis):
     """Specialist admission requires this trace's matching typed, negative probe."""
     resolution = diagnosis.get("observer_resolution", {})
+    available = [c for c in available if not c.coordinate.startswith("execution.") or (
+        diagnosis.get("failure") == "observer" and resolution.get("status") == "execution_rescue"
+        and resolution.get("candidate_id") == c.id)]
     return [c for c in available if c.coordinate != "specialists" or (
         diagnosis.get("failure") == "observer"
         and diagnosis.get("failed_capability") == c.value
@@ -155,7 +158,7 @@ class StructuredRole:
 
 class Judge(StructuredRole):
     def diagnose(self, payload, available):
-        available = [c for c in available if c.coordinate != "specialists"]
+        available = [c for c in available if c.coordinate != "specialists" and not c.coordinate.startswith("execution.")]
         schema = object_schema({**DIAGNOSIS_SCHEMA["properties"], **proposal_schema(available)["properties"]})
         value = {**unpack(payload), "available": [c.to_dict() for c in available]}
 

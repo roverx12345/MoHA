@@ -75,6 +75,8 @@ class EpisodeRunner:
                "state": {"task": copy.deepcopy(sample.task)}, "messages": [], "status": "error",
                "answer": None, "harness_id": harness.id, "repeat": repeat}
         raw["planner_context_policy"] = PLANNER_CONTEXT_POLICY
+        from .execution import EXECUTION_POLICY
+        raw["observer_execution_policy"] = EXECUTION_POLICY
         raw["planner_tool_policy"] = PLANNER_TOOL_POLICY
         raw["planner_completion_policy"] = PLANNER_COMPLETION_POLICY
         raw["answer_parsing_policy"] = ANSWER_PARSING_POLICY
@@ -102,7 +104,7 @@ class EpisodeRunner:
                 observer_profile="semantic_omni", player_tool_mode="bounded", compact_observe_schema=True,
                 evidence_enabled=harness.verification, commit_enabled=False,
                 observer_harness_config=ObserverHarnessConfig(), fixed_observer_execution=FixedObserverExecution(),
-                observer_execution_policy=dict(harness.execution),
+                harness=harness,
                 observer_capability_assignment={"general_visual": "generalist",
                     "ocr": "ocr_specialist" if "ocr" in harness.specialists else "generalist",
                     "asr": "asr_specialist" if "asr" in harness.specialists else "generalist"},

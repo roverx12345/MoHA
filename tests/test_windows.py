@@ -36,7 +36,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(episode.status, "completed", episode.raw)
         self.assertEqual([c[0] for c in service.calls], ["begin", "observe"])
         wire = service.calls[-1][1]
-        self.assertEqual((wire["start_seconds"], wire["end_seconds"], wire["fps"], wire["resolution"]), (5, 35, 1, 384))
+        self.assertEqual((wire["start_seconds"], wire["end_seconds"], wire["experiment_render"]["requested_frames"]), (5, 35, 30))
+        self.assertNotIn("resolution", wire)
         receipt = receipts(episode.events)[0]
         self.assertEqual(receipt["window"], [5, 35])
         self.assertIsNone(receipt["candidate_id"])
@@ -120,12 +121,12 @@ class WindowTests(unittest.TestCase):
 
     def test_execution_adaptation_changes_sampling_while_preserving_window(self):
         service, planner = Service(), Planner([observe(0, 60), ANSWER])
-        harness = Harness(execution=(("default", "default"), ("sequence", "dense_temporal")))
+        harness = Harness.from_dict({"execution": {"default": {}, "sequence": {"frames": 128}}})
         episode = EpisodeRunner(service, planner).run(harness, sample("unit"), 0)
         self.assertEqual(episode.status, "completed", episode.raw)
         receipt = receipts(episode.events)[0]
         self.assertEqual(receipt["window"], [0, 60])
-        self.assertEqual(receipt["requested_execution"]["fps"], 2)
+        self.assertEqual(receipt["requested_execution"]["frames"], 128)
 
     def test_failed_observer_records_the_selected_window_without_a_candidate(self):
         from video_os.core.errors import ProviderError
@@ -144,7 +145,9 @@ class WindowTests(unittest.TestCase):
         episode = EpisodeRunner(Service(), Planner([observe(5, 45), ANSWER])).run(Harness(), sample("unit"), 0)
         original = receipts(episode.events)[0]
         service = Service()
-        result = ProbeRunner(service).observe(sample("unit"), original, "dense_temporal")
+        from moha.observer import PolicyExecution
+        from moha.execution import ExecutionPolicy
+        result = ProbeRunner(service).observe(sample("unit"), original, PolicyExecution(policy=ExecutionPolicy(frames=128)))
         self.assertEqual(result["status"], "completed", result)
         receipt = result["result"]["observer_execution_receipt"]
         self.assertEqual(receipt["window"], [5, 45])

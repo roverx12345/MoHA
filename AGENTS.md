@@ -60,3 +60,11 @@
   Cache each successful diagnosis and stop new submissions on unexpected errors.
 - Verify with `PYTHONPATH=src:<runtime-root> python -m unittest discover -s tests -v`.
   Also run the pinned runtime's full test suite when integration changes warrant it.
+
+- Source-relative observer execution lives in `execution.py`: independent target
+  frames, source edge ratio and temporal/spatial/balanced priority. Keep the shared
+  feasible-set allocator, pinned renderer/token accounting, and existing OCR/ASR
+  routes. Do not revive fixed-resolution presets or silently migrate old profiles.
+  Probe one fixed request with one fresh control and at most seven distinct
+  one-coordinate alternatives; preflight media no-ops without model calls and
+  require the actual receipt to verify a change before crediting a rescue.

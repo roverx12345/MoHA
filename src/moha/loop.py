@@ -149,7 +149,7 @@ class Calibrator:
                         result["observer_resolution"] = {"status": "unavailable"}
                     else:
                         with self.probe_locks[lane]:
-                            result["observer_resolution"] = resolver.resolve(sample, harness, episode, result)
+                            result["observer_resolution"] = resolver.resolve(sample, harness, episode, result, available)
                         if result["observer_resolution"].get("status") == "error":
                             result["status"] = "error"
                     if result.get("status") == "valid":

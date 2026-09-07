@@ -24,7 +24,7 @@ class FakeClient:
 
     def call(self, prompt, value, schema, name):
         self.requests.append({"prompt": prompt, "payload": copy.deepcopy(value), "schema": schema, "name": name})
-        output = self.outputs.pop(0)
+        output = self.outputs[0] if name == "moha_probe_verdict" else self.outputs.pop(0)
         if isinstance(output, Exception):
             raise output
         return output, {"usage": {"input_tokens": 10}, "raw_text": str(output)}
@@ -120,22 +120,39 @@ class RoleTests(unittest.TestCase):
         self.assertIsNone(rank_candidates(rows, list(catalog().values()))["candidate_id"])
 
 
+class ExecutionEligibilityTests(unittest.TestCase):
+    def test_execution_vote_requires_that_specific_probed_rescue(self):
+        from moha.roles import eligible_for_trace
+        candidate = catalog()["observer.execution.text.frames.64"]
+        available = [candidate]
+        for resolution in ({}, {"status":"inconclusive"}, {"status":"execution_rescue","candidate_id":"different"}):
+            self.assertEqual(eligible_for_trace(available,diagnosis(observer_resolution=resolution)),[])
+        self.assertEqual(eligible_for_trace(available,diagnosis(observer_resolution={
+            "status":"execution_rescue","candidate_id":candidate.id})),available)
+
+
 def receipt(fps=1):
     return {"receipt_id": "original", "observer_id": "omni", "observer_model": "test-omni", "window": [10, 20],
-            "goal": {"type": "general", "target": "action"}, "requested_execution": {"fps": 1.0, "resolution": 384, "modalities": ["video"], "prompt_profile": "generic"},
+            "goal": {"type": "general", "target": "action"}, "requested_execution": {"policy_version": "moha_source_relative_v1", "frames": "auto", "source_scale": 1.0, "priority": "balanced", "modalities": ["video"], "prompt_profile": "generic"},
             "realized_execution": {"fps": fps, "resolution": 384, "sampled_frames": 10*fps,
-                                   "modalities": ["video"], "prompt_profile": "generic"}}
+                                   "modalities": ["video"], "prompt_profile": "generic", "source_sha256": "unit-source",
+                                   "frame_timestamps_seconds": [10+i/fps for i in range(10*fps)]}}
 
 
 class FakeProbe:
     def __init__(self, change=True, fail=False):
         self.calls, self.change, self.fail = [], change, fail
 
-    def observe(self, sample, original, preset):
-        self.calls.append((sample, original, preset))
-        return {"status": "error" if self.fail else "completed", "preset": preset,
+    def plan(self, sample, original, execution):
+        policy = execution.policy
+        return {"source_sha256": "unit-source", "window": original["window"],
+                "frames": policy.frames, "resolution": [policy.source_scale, policy.priority]}
+
+    def observe(self, sample, original, execution, candidate_id="baseline"):
+        self.calls.append((sample, original, candidate_id))
+        return {"status": "error" if self.fail else "completed", "candidate_id": candidate_id,
                 "perception_receipt": {},
-                "result": {"observer_execution_receipt": receipt(2 if preset != "baseline" and self.change else 1)}}
+                "result": {"observer_execution_receipt": receipt(2 if candidate_id != "baseline" and self.change else 1)}}
 
 
 class ProbeTests(unittest.TestCase):
@@ -149,7 +166,7 @@ class ProbeTests(unittest.TestCase):
         runner = FakeProbe()
         result = self.resolve(runner, FakeClient({"baseline_supports_goal": False, "alternative_supports_goal": True, "reason": "required action recovered"}))
         self.assertEqual(result["status"], "execution_rescue")
-        self.assertEqual([c[2] for c in runner.calls], ["baseline", "dense_temporal"])
+        self.assertEqual([c[2] for c in runner.calls], ["baseline", "observer.execution.general.frames.128"])
         self.assertEqual(runner.calls[0][1], runner.calls[1][1])
 
     def test_baseline_also_recovers_not_execution_rescue(self):
@@ -161,6 +178,36 @@ class ProbeTests(unittest.TestCase):
         result = self.resolve(FakeProbe(change=False), client)
         self.assertEqual(result["status"], "inconclusive")
         self.assertEqual(client.requests, [])
+
+    def test_planned_noops_do_not_render_or_call_either_model(self):
+        class Noop(FakeProbe):
+            def plan(self, sample, original, execution):
+                return {"source_sha256": "unit-source", "window": original["window"], "frames": 1, "resolution": [2,2]}
+        runner, client = Noop(), FakeClient()
+        result = self.resolve(runner, client)
+        self.assertEqual(result["status"], "inconclusive")
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(client.requests, [])
+        self.assertEqual(len(result["skipped"]), 7)
+
+    def test_only_available_candidates_can_be_probed(self):
+        runner, client = FakeProbe(), FakeClient()
+        s, harness = sample("cal"), Harness()
+        e = Episode(s.sample_id,s.id,harness.id,0,list(s.video_key),"A","B","completed",
+            events=[{"kind":"tool_result","step":2,"result":{"observer_execution_receipt":receipt()}}])
+        result = ObserverResolver(runner,client).resolve(s,harness,e,diagnosis(), [])
+        self.assertEqual(result["status"],"inconclusive")
+        self.assertEqual(runner.calls,[])
+
+    def test_changed_source_is_rejected_before_any_model_call(self):
+        class Changed(FakeProbe):
+            def plan(self, *args):
+                return {**super().plan(*args), "source_sha256": "changed"}
+        runner, client = Changed(), FakeClient()
+        result = self.resolve(runner,client)
+        self.assertEqual(result["status"],"error")
+        self.assertEqual(runner.calls,[])
+        self.assertEqual(client.requests,[])
 
     def test_probe_errors_not_capability_failures(self):
         result = self.resolve(FakeProbe(fail=True), FakeClient())

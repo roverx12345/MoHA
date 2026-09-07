@@ -7,6 +7,7 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
+from .execution import ExecutionPolicy, GOALS, CHOICES
 
 
 def canonical(value: Any) -> str:
@@ -32,7 +33,7 @@ class Harness:
     verification: bool = False
     retrieval_guard: bool = False
     # Sorted pairs make hashes stable and prevent mutation of a frozen config.
-    execution: tuple[tuple[str, str], ...] = (("default", "default"),)
+    execution: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = (("default", ()),)
     specialists: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -41,19 +42,29 @@ class Harness:
         for name in ("overview", "memory", "verification", "retrieval_guard"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be boolean")
-        pairs = tuple(sorted(tuple(x) for x in self.execution))
+        pairs = []
+        for goal, settings in self.execution:
+            if goal not in GOALS or isinstance(settings, str):
+                raise ValueError("execution requires source-relative settings; legacy presets need their frozen source")
+            values = dict(settings)
+            if len(values) != len(settings) or set(values) - set(CHOICES):
+                raise ValueError("unknown or duplicate execution field")
+            normalized = ExecutionPolicy(**values).to_dict()
+            pairs.append((goal, tuple(sorted((k, normalized[k]) for k in values))))
+        pairs = tuple(sorted(pairs))
         if len(dict(pairs)) != len(pairs) or "default" not in dict(pairs):
             raise ValueError("execution needs one default and unique goal keys")
-        goals = {"default", "general", "presence", "attribute", "count", "text", "relation", "sequence"}
-        if any(k not in goals or v not in {"default", "dense_temporal", "high_resolution"} for k, v in pairs):
-            raise ValueError("unknown execution goal or preset")
         if len(set(self.specialists)) != len(self.specialists) or set(self.specialists) - {"ocr", "asr"}:
             raise ValueError("specialists must be unique ocr/asr capabilities")
         object.__setattr__(self, "execution", pairs)
         object.__setattr__(self, "specialists", tuple(sorted(self.specialists)))
 
+    def execution_for_goal(self, goal: str) -> ExecutionPolicy:
+        policies = dict(self.execution)
+        return ExecutionPolicy(**{**dict(policies["default"]), **dict(policies.get(goal, ()))})
+
     def to_dict(self) -> dict:
-        return {**asdict(self), "execution": dict(self.execution), "specialists": list(self.specialists)}
+        return {**asdict(self), "execution": {k: dict(v) for k, v in self.execution}, "specialists": list(self.specialists)}
 
     @classmethod
     def from_dict(cls, data: dict) -> Harness:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from video_os.agent.player import VideoPlayerRegistry, PlayerProtocolError
 from video_os.agent.observer_registry import ObserverGoal
+from .models import Harness
+from .observer import PolicyExecution, PolicyObserverRegistry
 
 
 PLANNER_TOOL_POLICY = "moha_semantic_windows_v1"
@@ -10,6 +12,28 @@ PLANNER_TOOL_POLICY = "moha_semantic_windows_v1"
 
 class WindowPlayerRegistry(VideoPlayerRegistry):
     """Keep search and typed observe; the planner owns the temporal support."""
+
+    def __init__(self, backend, *, harness=None, **kwargs):
+        self.moha_harness = harness or Harness()
+        registry = PolicyObserverRegistry()
+        # VideoToolRegistry exposes the existing service used by specialist routes.
+        registry.register("omni", backend.video_os)
+        super().__init__(backend, **kwargs)
+        self._observer_registry = registry
+
+    def _execution_for_goal(self, goal):
+        return PolicyExecution(policy=self.moha_harness.execution_for_goal(goal.type),
+            modalities=self._fixed_observer_execution.modalities,
+            prompt_profile=self._fixed_observer_execution.prompt_profile)
+
+    def observer_contract(self):
+        contract = super().observer_contract()
+        if contract is not None:
+            contract["execution"] = PolicyExecution(policy=self.moha_harness.execution_for_goal("default"),
+                modalities=self._fixed_observer_execution.modalities,
+                prompt_profile=self._fixed_observer_execution.prompt_profile).to_dict()
+            contract["execution_policy"] = self.moha_harness.to_dict()["execution"]
+        return contract
 
     def schemas(self):
         schemas = super().schemas()

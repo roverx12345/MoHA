@@ -1,7 +1,9 @@
 """One audited repair of unusable observations over the same bounded media."""
 from __future__ import annotations
 import copy
-from dataclasses import replace
+from dataclasses import replace, dataclass, field
+from video_os.agent.observer_registry import FixedObserverExecution, ObserverRegistry
+from .execution import ExecutionPolicy, EXECUTION_POLICY, allocate
 from video_os.core.errors import ProviderResponseError
 from video_os.providers.core import (VideoOSPerceptionService, _default_compact_modalities,
     _normalize_compact_observation, map_view_relative_times_to_source)
@@ -45,6 +47,11 @@ def invalid_output_reason(result, request, schema_name):
 
 
 class ObserverService(VideoOSPerceptionService):
+    def plan_observer_execution(self, session_id, window, policy):
+        with self._lock:
+            session = self._session(session_id)
+            return allocate(session.renderer, session.media, window, policy)
+
     def _save_call(self, session, *, mode_label, request, output_schema, schema_name, backend=None):
         provider = backend or session.perception
         if mode_label not in {"look", "verify"} or schema_name not in {
@@ -128,4 +135,61 @@ class ObserverService(VideoOSPerceptionService):
             recoveries = getattr(self._session(session_id), "observer_output_recoveries", [])
             if recoveries:
                 result["observer_output_recoveries"] = copy.deepcopy(recoveries)
+        return result
+
+
+@dataclass(frozen=True)
+class PolicyExecution(FixedObserverExecution):
+    policy: ExecutionPolicy = field(default_factory=ExecutionPolicy)
+
+    def to_dict(self):
+        return {"policy_version": EXECUTION_POLICY, **self.policy.to_dict(),
+                "modalities": list(self.modalities), "prompt_profile": self.prompt_profile}
+
+    @classmethod
+    def from_dict(cls, value):
+        data = dict(value)
+        if data.pop("policy_version", None) != EXECUTION_POLICY:
+            raise ValueError("observer receipt requires the current source-relative execution policy")
+        modalities = tuple(data.pop("modalities"))
+        prompt = data.pop("prompt_profile")
+        return cls(policy=ExecutionPolicy(**data), modalities=modalities, prompt_profile=prompt)
+
+
+class _PlannedBackend:
+    """Per-call adapter; never mutate a shared service or its sampling defaults."""
+    def __init__(self, service, plan):
+        self.service, self.plan = service, plan
+        self.perception_model = service.perception_model
+
+    def inspect_window(self, session_id, **kwargs):
+        # These legacy sentinels are not execution controls for this policy.
+        kwargs.pop("fps", None)
+        kwargs.pop("resolution", None)
+        return self.service.inspect_window(session_id, **kwargs,
+            experiment_render=self.plan["experiment_render"])
+
+
+class PolicyObserverRegistry(ObserverRegistry):
+    def observe(self, *, execution, **kwargs):
+        if not isinstance(execution, PolicyExecution):
+            raise TypeError("MoHA requires a source-relative execution policy")
+        observer_id = kwargs["config"].route(kwargs["goal"])
+        service = self.get(observer_id)
+        plan = service.plan_observer_execution(kwargs["session_id"], kwargs["window"], execution.policy)
+        registry = ObserverRegistry()
+        registry.register(observer_id, _PlannedBackend(service, plan))
+        result = registry.observe(execution=execution, **kwargs)
+        receipt = result["observer_execution_receipt"]
+        view = result.get("view", {})
+        realized = receipt["realized_execution"]
+        realized.update({k: copy.deepcopy(view.get(k)) for k in
+            ("resolution", "frame_timestamps_seconds", "decoded_frame_indices", "source_sha256")})
+        # The provider exposes a reduced view; the allocator read this fingerprint
+        # from the same active session metadata before rendering.
+        realized["source_sha256"] = plan["source_sha256"]
+        realized["allocation"] = plan
+        # Retain processor-specific resize/token accounting separately from the
+        # actual rendered resolution: processor minimum pixels can undo savings.
+        realized["input_token_accounting"] = copy.deepcopy(view.get("input_token_accounting", {}))
         return result

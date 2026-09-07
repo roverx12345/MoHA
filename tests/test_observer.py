@@ -53,14 +53,14 @@ class ObserverTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.media_tmp.cleanup()
 
-    def service(self, replies, *, original=False, backend="qwen3omni", budget=None):
+    def service(self, replies, *, original=False, backend="qwen3omni", budget=None, media=None):
         from moha.observer import ObserverService
         from video_os.providers.core import VideoOSPerceptionService, AssetCatalog
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         transport = Transport(replies)
         service = (VideoOSPerceptionService if original else ObserverService)(
-            catalog=AssetCatalog({"unit": self.media}, allowed_roots=[self.media.parent]),
+            catalog=AssetCatalog({"unit": media or self.media}, allowed_roots=[(media or self.media).parent]),
             output_root=tmp.name, perception_backend=backend, perception_api_key="offline-test",
             base_url="http://localhost:1/v1", transport=transport, provider_retries=0,
             image_retries=0, budget=budget)
@@ -71,6 +71,40 @@ class ObserverTests(unittest.TestCase):
         result = service.inspect_window(session, start_seconds=1, end_seconds=2.5,
             inspection_goal="Describe the test pattern changes.", fps=4, resolution=224)
         return session, result
+
+    def test_source_relative_modes_reach_actual_media_and_audited_receipts(self):
+        from dataclasses import replace
+        from video_os.providers.core import default_perception_budget
+        from video_os.agent.observer_registry import ObserverHarnessConfig, ObserverGoal
+        from moha.observer import PolicyExecution, PolicyObserverRegistry
+        from moha.execution import ExecutionPolicy
+        from moha.probes import realized_signature
+        large = Path(self.media_tmp.name) / "large.mp4"
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+            "-i", "testsrc2=size=1920x1080:rate=24", "-t", "1", "-c:v", "libx264",
+            "-pix_fmt", "yuv420p", str(large)], check=True)
+        budget = replace(default_perception_budget(), f_view=128, p_view=2073600,
+                         p_call=2073600*128, b_video=1000)
+        signatures = []
+        for mode in ("temporal", "spatial", "balanced"):
+            service, transport = self.service([response()], budget=budget, media=large)
+            session = service.begin_episode("unit")["session_id"]
+            registry = PolicyObserverRegistry()
+            registry.register("omni", service)
+            result = registry.observe(config=ObserverHarnessConfig(),
+                execution=PolicyExecution(policy=ExecutionPolicy(frames=128, priority=mode), modalities=("video",)),
+                session_id=session, window=(0,1), goal=ObserverGoal(type="general",target="pattern"), receipt_id=mode)
+            receipt = result["observer_execution_receipt"]
+            actual = receipt["realized_execution"]
+            self.assertEqual(receipt["window"],[0,1])
+            self.assertEqual(actual["resolution"],actual["allocation"]["resolution"])
+            self.assertEqual(actual["sampled_frames"],actual["allocation"]["frames"])
+            self.assertEqual(len(actual["frame_timestamps_seconds"]),actual["sampled_frames"])
+            self.assertIsNotNone(realized_signature(receipt))
+            self.assertLessEqual(actual["input_token_accounting"]["budgeted_video_tokens"],1000)
+            self.assertEqual(len(transport.calls),1)
+            signatures.append(realized_signature(receipt))
+        self.assertEqual(len(set(signatures)),3)
 
     def test_successful_first_call_is_wire_identical_and_preserves_claims(self):
         # Includes repeated and conflicting claims: no post-hoc merging/filtering.
@@ -194,10 +228,10 @@ class ObserverTests(unittest.TestCase):
 
     def test_probe_unusable_output_is_inconclusive_and_does_not_offer_a_rescue(self):
         from moha.probes import ObserverResolver, ProbeRunner
-        from test_runtime import Service
         observe = call("video_player_observe", {"start_seconds": 1, "end_seconds": 2.5,
             "goal": {"type": "sequence", "target": "pattern changes"}})
-        episode = EpisodeRunner(Service(), Planner([observe, ANSWER])).run(Harness(), sample("unit"), 0)
+        original_service, _ = self.service([response()])
+        episode = EpisodeRunner(original_service, Planner([observe, ANSWER])).run(Harness(), sample("unit"), 0)
         service, transport = self.service([response("{"), response("{")])
         resolver = ObserverResolver(ProbeRunner(service), object())
         step = next(e["step"] for e in episode.events if e["kind"] == "tool_result")

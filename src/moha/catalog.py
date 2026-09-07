@@ -1,36 +1,23 @@
 """One executable intervention catalog; no symbolic shadow state."""
 from dataclasses import dataclass, replace
 from .models import Harness
-
-
-PRESETS = {
-    "default": (1.0, 384),
-    "dense_temporal": (2.0, 384),
-    "high_resolution": (1.0, 768),
-}
-GOAL_PRESETS = {
-    "general": ("dense_temporal", "high_resolution"),
-    "presence": ("dense_temporal", "high_resolution"),
-    "attribute": ("high_resolution",),
-    "count": ("dense_temporal", "high_resolution"),
-    "text": ("high_resolution",),
-    "relation": ("high_resolution", "dense_temporal"),
-    "sequence": ("dense_temporal",),
-}
+from .execution import GOALS, CHOICES
 
 
 @dataclass(frozen=True)
 class Intervention:
     id: str
     coordinate: str
-    value: str | bool
+    value: str | bool | int | float
     description: str
 
     def apply(self, base: Harness) -> Harness:
         if self.coordinate.startswith("execution."):
-            goal = self.coordinate.split(".", 1)[1]
+            _, goal, field = self.coordinate.split(".")
             policy = dict(base.execution)
-            policy[goal] = self.value
+            settings = dict(policy.get(goal, ()))
+            settings[field] = self.value
+            policy[goal] = tuple(settings.items())
             return replace(base, execution=tuple(policy.items()))
         if self.coordinate == "specialists":
             return replace(base, specialists=tuple(sorted(set(base.specialists) | {self.value})))
@@ -41,16 +28,11 @@ class Intervention:
         if proposed == base:
             return False
         if self.coordinate.startswith("execution."):
-            goal = self.coordinate.split(".", 1)[1]
-            old = dict(base.execution)
-            old_fps, old_res = PRESETS[old.get(goal, old["default"])]
-            new_fps, new_res = PRESETS[str(self.value)]
-            if (old_fps, old_res) == (new_fps, new_res):
+            _, goal, field = self.coordinate.split(".")
+            if getattr(base.execution_for_goal(goal), field) == self.value:
                 return False
-            # Proof valid for every aspect ratio >= 1 and every frame count:
-            # both requested pixel caps exceed the same hard per-frame cap.
-            if p_view is not None and old_fps == new_fps and min(old_res, new_res) ** 2 >= p_view:
-                return False
+            # Source size, duration and token-profile rounding determine media
+            # no-ops. Those are checked locally by the fixed-window probe planner.
         return True
 
     def to_dict(self) -> dict:
@@ -67,10 +49,12 @@ def catalog() -> dict[str, Intervention]:
     }
     items = [Intervention(f"planner.module.{key}", field, True, text)
              for key, (field, text) in modules.items()]
-    for goal, presets in {"default": tuple(PRESETS), **GOAL_PRESETS}.items():
-        for preset in presets:
-            items.append(Intervention(f"observer.execution.{goal}.{preset}", f"execution.{goal}",
-                                      preset, f"Use {preset} for {goal} observations."))
+    for goal in GOALS[1:]:
+        for field, values in CHOICES.items():
+            for value in values:
+                items.append(Intervention(f"observer.execution.{goal}.{field}.{value}",
+                    f"execution.{goal}.{field}", value,
+                    f"Set {field}={value} for {goal}; retain the other execution controls and shared budgets."))
     items.extend(Intervention(f"observer.specialist.{x}", "specialists", x,
                              f"Use the configured {x.upper()} specialist for typed {x.upper()} goals.")
                  for x in ("ocr", "asr"))
