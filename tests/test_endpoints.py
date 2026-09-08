@@ -60,7 +60,10 @@ class EndpointTests(unittest.TestCase):
 
     def test_prepare_and_build_isolate_eight_judges_and_original_probe_clients(self):
         cfg = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
+        judge = copy.deepcopy(cfg["models"]["judge"])
+        judge["key"] = {"local": True}
         cfg["models"] = self.models("http://p0/v1,http://p1/v1")
+        cfg["models"]["judge"] = judge
         cfg["specialists"] = []
         cfg.pop("image")
         cfg.pop("asr")
@@ -78,6 +81,10 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(len(prepared["clients"]["judges"]), 8)
             self.assertEqual(len(prepared["clients"]["probe_judges"]), 2)
             self.assertEqual(len({id(c) for c in adapters}), 10)
+            for adapter in adapters:
+                self.assertEqual(adapter.spec.model, "claude-opus-4-8")
+                self.assertEqual(adapter.spec.base_url, "https://zgc.apihy.com")
+                self.assertEqual(adapter.spec.response_format_mode, "json_text")
             with RunStore(Path(tmp) / "run", {}) as store, patch("moha.observer.ObserverService") as service:
                 service.side_effect = [unittest.mock.Mock(), unittest.mock.Mock()]
                 cal = build(prepared, store)
@@ -87,6 +94,22 @@ class EndpointTests(unittest.TestCase):
 
 
 class DiagnosisConfigTests(unittest.TestCase):
+    def test_retired_judge_fails_before_runtime_or_credential_setup(self):
+        cfg = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
+        cfg["models"]["judge"]["spec"]["model"] = "gpt-5.5"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            for endpoint in ("https://216.36.108.181", "https://216.36.108.181:443/v1/",
+                             "https://zgc.apihy.com, https://216.36.108.181/v1"):
+                cfg["models"]["judge"]["spec"]["base_url"] = endpoint
+                path.write_text(json.dumps(cfg))
+                with patch("moha.bridge.activate_runtime") as activate, \
+                     patch("moha.bridge.credential") as key, \
+                     self.assertRaisesRegex(ValueError, "gpt-5.5 Judge is retired"):
+                    prepare(path, Path(tmp))
+                activate.assert_not_called()
+                key.assert_not_called()
+
     def test_invalid_worker_count_fails_before_runtime_or_client_setup(self):
         cfg = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
         with tempfile.TemporaryDirectory() as tmp:

@@ -56,15 +56,16 @@
     },
     "judge": {
       "spec": {
-        "model": "gpt-5.5",
-        "base_url": "https://216.36.108.181",
+        "model": "claude-opus-4-8",
+        "base_url": "https://zgc.apihy.com",
         "response_format_mode": "json_text",
         "max_completion_tokens": 4096,
         "timeout_seconds": 900,
         "retries": 0
       },
       "key": {
-        "env": "MOHA_JUDGE_API_KEY"
+        "file": "/home/jianghan/.config/vidreasoning-secrets/apihy_claude_judge_20260902.json",
+        "field": "claude"
       }
     }
   },

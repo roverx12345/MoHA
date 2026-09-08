@@ -34,6 +34,15 @@ Video OS 的工具、媒体处理和模型适配器由 `config.runtime.root` 指
 
 MoHA 与 Video OS 分别记录 Git 提交、源码哈希和干净状态。`doctor` 检查输入、视频哈希与配置，不调用模型；真实推理要求两份代码均已提交。配置只保存凭据文件或环境变量引用，不保存密钥。
 
+后续实验的 Judge 使用 apihy `claude-opus-4-8`（API 模型列表中的准确名称），
+地址为 `https://zgc.apihy.com`，响应模式为 `json_text`。`config.example.json`
+引用服务器已有的 `apihy_claude_judge_20260902.json` 文件中的 `claude` 凭据；
+其他机器可将 `models.judge.key` 替换为自己的文件或环境变量引用。
+trace 诊断和 observer probe 判定均使用 `models.judge`。启动时拒绝 `216.*`
+地址上的 `gpt-5.5` Judge 配置，避免从旧实验复制配置后误用旧服务。
+Planner 的独立模型配置不受此限制。Judge 配置属于运行身份：更换 Judge 时使用新输出目录，
+已有实验按原冻结源码和配置续跑，不能将旧 Judge 的诊断缓存标记为 Claude 结果。
+
 新实验模板使用 `f_view=128 / p_view=262144 / p_call=33554432 / b_video=16384`。
 这些是 H0 与所有候选共享的上限；单次帧数由窗口、目标帧数、源帧数与预算决定。
 固定运行时中的 `f_episode=256` 与 `b_video_episode=65536` 是 episode 累计量的提示目标，不是阻断调用的硬上限。累计消耗继续写入 ledger；单次硬上限与 planner 步数限制保持生效。

@@ -9,6 +9,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 from .catalog import catalog
 from .loop import Calibrator, SearchPolicy
 from .models import Harness, Sample, ValidationPolicy, canonical, check_splits, digest, positive_int
@@ -204,6 +205,14 @@ def prepare(config_path, repo):
     allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers"}
     if required - set(config) or set(config) - allowed or config["schema"] != "moha_config_v1":
         raise ValueError("unknown or missing MOHA configuration fields/schema")
+    judge_spec = config["models"].get("judge", {}).get("spec", {})
+    if judge_spec.get("model", "").strip().lower() == "gpt-5.5" and any(
+            (urlsplit(endpoint.strip()).hostname or "").startswith("216.")
+            for endpoint in judge_spec.get("base_url", "").split(",")):
+        raise ValueError("216.* gpt-5.5 Judge is retired; configure models.judge with "
+                         "claude-opus-4-8 at https://zgc.apihy.com, json_text, and Claude credentials "
+                         "as in config.example.json. Use a new run output; unchanged existing runs "
+                         "must resume with their original frozen source/configuration.")
     diagnosis_workers = config.get("diagnosis_workers", 8)
     positive_int(diagnosis_workers, "diagnosis_workers")
     runtime_root = activate_runtime(config["runtime"])
