@@ -26,6 +26,32 @@ def renderer(**limits):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires the pinned runtime")
 class AllocationTests(unittest.TestCase):
+    def test_rates_change_density_within_the_exact_window_and_auto_matches_one_fps(self):
+        for duration in (8, 25, 60):
+            plans = [allocate(renderer(), media(), (0, duration), ExecutionPolicy(target_fps=f))
+                     for f in (0.5, 1, 2)]
+            expected = {8: [4, 8, 16], 25: [13, 25, 50], 60: [30, 60, 120]}[duration]
+            self.assertEqual([p["frames"] for p in plans], expected)
+            self.assertEqual([p["target_frames"] for p in plans], expected)
+            self.assertEqual(plan_signature(plans[1]),
+                             plan_signature(allocate(renderer(), media(), (0, duration), ExecutionPolicy())))
+            for p in plans:
+                self.assertEqual(p["window"], [0, duration])
+                self.assertEqual(p["resolution"], [640, 360])
+                self.assertFalse(p["frame_cap_hit"])
+
+    def test_frame_cap_and_other_allocation_limits_are_reported_separately(self):
+        source = media()
+        source.duration_seconds = 300
+        capped = allocate(renderer(), source, (0, 100), ExecutionPolicy(target_fps=2))
+        self.assertEqual((capped["requested_frames"], capped["target_frames"]), (200, 128))
+        self.assertTrue(capped["frame_cap_hit"])
+        limited = allocate(renderer(b_video=512), source, (0, 60), ExecutionPolicy(target_fps=2))
+        self.assertEqual(limited["target_frames"], 120)
+        self.assertLess(limited["frames"], 120)
+        self.assertFalse(limited["frame_cap_hit"])
+        self.assertLessEqual(limited["video_tokens"], 512)
+
     def test_source_ratios_are_edge_ratios_without_upscaling(self):
         for width, height in [(640, 360), (1920, 1080), (360, 640)]:
             r = renderer(p_view=4000000, p_call=128*4000000, b_video=100000)

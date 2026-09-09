@@ -10,6 +10,7 @@ from .models import Episode, Harness, Sample, ValidationPolicy, check_splits, di
 from .evidence import diagnosis_view
 from .roles import failure_profile, rank_candidates
 from .store import RunStore
+from .perception import calibrate_perception, policy_grid
 
 
 @dataclass(frozen=True)
@@ -35,8 +36,12 @@ class Calibrator:
                  calibration: list[Sample], validation: list[Sample],
                  initial: Harness = Harness(), search: SearchPolicy = SearchPolicy(),
                  validation_policy: ValidationPolicy = ValidationPolicy(), p_view: int | None = None,
-                 resolvers=None, allowed_ids: list[str] | None = None):
+                 resolvers=None, allowed_ids: list[str] | None = None,
+                 perception_calibration: bool = False):
         check_splits(calibration, validation)
+        if type(perception_calibration) is not bool:
+            raise ValueError("perception_calibration must be boolean")
+        self.perception_calibration = perception_calibration
         self.runners = tuple(runners)
         if not self.runners or len({id(r) for r in self.runners}) != len(self.runners):
             raise ValueError("each execution lane requires an independent runner")
@@ -55,13 +60,21 @@ class Calibrator:
         all_items = catalog()
         if allowed_ids is not None and set(allowed_ids) - set(all_items):
             raise ValueError("unknown allowed intervention")
-        self.catalog = {k: v for k, v in all_items.items() if allowed_ids is None or k in allowed_ids}
+        self.catalog = {k: v for k, v in all_items.items() if (allowed_ids is None or k in allowed_ids)
+                        and not (perception_calibration and v.coordinate.startswith("execution."))}
+        # Specialist attribution still checks execution alternatives before
+        # proposing a new observer capability. These are probes, not promotions.
+        self.execution_probes = [c for c in all_items.values() if c.coordinate.startswith("execution.")]
         identity = {"initial": initial.to_dict(), "search": asdict(search), "validation": asdict(validation_policy),
                     "calibration": [s.id for s in calibration], "heldout": [s.id for s in validation],
                     "catalog": [x.to_dict() for x in self.catalog.values()], "p_view": p_view,
                     "observer_probes": any(r is not None for r in self.resolvers), "adaptation": "judge_uniform_vote_v1",
                     "episode_schedule": {"rule": "sample_index_mod_lanes_v1", "lanes": len(self.runners)},
-                    "diagnosis_schedule": {"rule": "bounded_trace_workers_v1", "workers": len(self.judges)}}
+                    "diagnosis_schedule": {"rule": "bounded_trace_workers_v1", "workers": len(self.judges)},
+                    "perception_calibration": perception_calibration}
+        if perception_calibration:
+            identity["perception_grid"] = policy_grid(initial)
+            identity["specialist_execution_probes"] = [c.to_dict() for c in self.execution_probes]
         self.store.write("experiment.json", identity, immutable=True)
         self.state = self.store.read("checkpoint.json") or {
             "round": 0, "attempt": 0, "harness": initial.to_dict(), "history": [],
@@ -145,11 +158,17 @@ class Calibrator:
                 result = judge.diagnose(payload, available)
                 if result.get("status") == "valid" and result.get("failure") == "observer":
                     resolver = self.resolvers[lane]
-                    if resolver is None:
+                    specialist = "observer.specialist." + str(result.get("failed_capability"))
+                    probe_specialist = any(c.id == specialist for c in available)
+                    if self.perception_calibration and not probe_specialist:
+                        result["observer_resolution"] = {"status": "deferred",
+                            "reason": "sampling policies are evaluated after structural adaptation"}
+                    elif resolver is None:
                         result["observer_resolution"] = {"status": "unavailable"}
                     else:
+                        probe_candidates = available + self.execution_probes if self.perception_calibration else available
                         with self.probe_locks[lane]:
-                            result["observer_resolution"] = resolver.resolve(sample, harness, episode, result, available)
+                            result["observer_resolution"] = resolver.resolve(sample, harness, episode, result, probe_candidates)
                         if result["observer_resolution"].get("status") == "error":
                             result["status"] = "error"
                     if result.get("status") == "valid":
@@ -232,6 +251,8 @@ class Calibrator:
         self.state.pop("error_type", None)
         self._save()
         try:
+            if self.state.get("phase") == "perception":
+                return self._finish(self.state["stop_reason"])
             while self.state["round"] < self.search.max_rounds:
                 current = Harness.from_dict(self.state["harness"])
                 rejected = {h["candidate"] for h in self.state["history"] if not h["validation"]["accepted"]}
@@ -289,6 +310,13 @@ class Calibrator:
             raise
 
     def _finish(self, reason: str) -> dict:
+        if self.perception_calibration and self.state["status"] != "completed":
+            if self.state.get("phase") != "perception":
+                self.state.update(phase="perception", structural_harness=self.state["harness"], stop_reason=reason)
+                self._save()
+            base = Harness.from_dict(self.state["structural_harness"])
+            selection = calibrate_perception(self, base)
+            self.state.update(harness=selection["selected_harness"], perception_calibration=selection, phase="completed")
         self.state.update(status="completed", stop_reason=reason)
         self._save()
         self.store.write("result.json", self.state, immutable=True)

@@ -24,12 +24,17 @@ class Intervention:
         return replace(base, **{self.coordinate: self.value})
 
     def available(self, base: Harness, p_view: int | None = None) -> bool:
-        proposed = self.apply(base)
+        try:
+            proposed = self.apply(base)
+        except ValueError:
+            return False  # A rate edit cannot overwrite an explicit frame primitive.
         if proposed == base:
             return False
         if self.coordinate.startswith("execution."):
             _, goal, field = self.coordinate.split(".")
-            if getattr(base.execution_for_goal(goal), field) == self.value:
+            policy = base.execution_for_goal(goal)
+            current = policy.sampling_rate if field == "target_fps" else getattr(policy, field)
+            if current == self.value:
                 return False
             # Source size, duration and token-profile rounding determine media
             # no-ops. Those are checked locally by the fixed-window probe planner.
@@ -51,6 +56,8 @@ def catalog() -> dict[str, Intervention]:
              for key, (field, text) in modules.items()]
     for goal in GOALS[1:]:
         for field, values in CHOICES.items():
+            if field == "frames":
+                continue  # Renderer primitives are not semantic sampling policies.
             for value in values:
                 items.append(Intervention(f"observer.execution.{goal}.{field}.{value}",
                     f"execution.{goal}.{field}", value,

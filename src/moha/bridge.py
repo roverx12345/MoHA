@@ -16,6 +16,7 @@ from .models import Harness, Sample, ValidationPolicy, canonical, check_splits, 
 from .probes import ObserverResolver, ProbeRunner
 from .roles import Judge
 from .runtime import EpisodeRunner
+from .execution import FRAME_CAP
 
 
 def read_object(path):
@@ -202,7 +203,7 @@ def lane_clients(models, observer_url, budget):
 def prepare(config_path, repo):
     config = read_object(config_path)
     required = {"schema", "runtime", "media_root", "calibration_manifest", "validation_manifest", "budget", "models", "observer"}
-    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers"}
+    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers", "perception_calibration"}
     if required - set(config) or set(config) - allowed or config["schema"] != "moha_config_v1":
         raise ValueError("unknown or missing MOHA configuration fields/schema")
     judge_spec = config["models"].get("judge", {}).get("spec", {})
@@ -224,6 +225,11 @@ def prepare(config_path, repo):
         raise ValueError("calibration must start from shared Initial-Omni H0")
     search, validation = SearchPolicy(**config.get("search", {})), ValidationPolicy(**config.get("validation", {}))
     budget = BudgetContract(**config["budget"])
+    perception_calibration = config.get("perception_calibration", False)
+    if type(perception_calibration) is not bool:
+        raise ValueError("perception_calibration must be boolean")
+    if perception_calibration and budget.f_view != FRAME_CAP:
+        raise ValueError("final perception calibration requires the shared f_view=128 frame cap")
     specialists = config.get("specialists", [])
     if not isinstance(specialists, list) or len(set(specialists)) != len(specialists) or set(specialists) - {"ocr", "asr"}:
         raise ValueError("specialists must list supported, unique capabilities")
@@ -264,6 +270,7 @@ def prepare(config_path, repo):
                 "input_hashes": {"calibration": digest(left), "validation": digest(right)}}
     ids = [k for k, item in catalog().items()
            if (item.coordinate != "specialists" or item.value in specialists)
+           and not (perception_calibration and item.coordinate.startswith("execution."))
            and (item.coordinate != "retrieval_guard" or config.get("retrieval_extension", False))]
     return {"config": config, "identity": identity, "initial": initial, "search": search,
             "policy": validation, "budget": budget, "assets": {**assets, **right_assets},
@@ -307,6 +314,7 @@ def build(prepared, store):
     return Calibrator(runners=runners, judges=[Judge(TextRoleClient(c)) for c in prepared["clients"]["judges"]],
         store=store, calibration=prepared["calibration"], validation=prepared["validation"],
         initial=prepared["initial"], search=prepared["search"], validation_policy=prepared["policy"],
+        perception_calibration=config.get("perception_calibration", False),
         p_view=prepared["budget"].p_view, allowed_ids=prepared["allowed_ids"],
         resolvers=[ObserverResolver(ProbeRunner(r.service, store), TextRoleClient(c), p_view=prepared["budget"].p_view)
                    for r, c in zip(runners, prepared["clients"]["probe_judges"])])

@@ -6,7 +6,7 @@ import re
 import tempfile
 from pathlib import Path
 from .catalog import Intervention
-from .models import Harness, digest
+from .models import Harness, ValidationPolicy, digest
 
 
 def calibrated_profile(run):
@@ -40,6 +40,26 @@ def calibrated_profile(run):
                           "from": row["from"], "to": row["to"]})
         if accepted:
             current = proposed
+    perception = None
+    if experiment.get("perception_calibration", False):
+        from .perception import policy_grid, validate_result
+        for name in ("perception/plan.json", "perception/result.json"):
+            if not (run / name).is_file():
+                raise ValueError("calibration incomplete: missing " + name)
+            records[name] = json.loads((run / name).read_text())
+        plan, perception = records["perception/plan.json"], records["perception/result.json"]
+        if (plan.get("structural_harness") != current.to_dict() or plan.get("configs") != policy_grid(current)
+                or plan.get("validation_samples") != experiment["heldout"]
+                or plan.get("validation_policy") != experiment["validation"]
+                or result.get("structural_harness") != current.to_dict()
+                or result.get("perception_calibration") != perception):
+            raise ValueError("final perception calibration differs from the structural result or validation contract")
+        current = validate_result(perception, current, ValidationPolicy(**experiment["validation"]))
+        for row in perception["rows"]:
+            name = f"perception/scores/{row['id']}.json"
+            if not (run / name).is_file() or json.loads((run / name).read_text()) != row:
+                raise ValueError("final perception scores are incomplete or inconsistent")
+            records[name] = row
     if current.id != frozen["harness_id"] or current != Harness.from_dict(frozen["harness"]) or current != Harness.from_dict(result["harness"]):
         raise ValueError("frozen harness differs from the calibration result/history")
     config = identity["config"]
@@ -62,7 +82,8 @@ def calibrated_profile(run):
     return {"schema": "moha_calibrated_profile_v1", "pair": pair, "stack": stack,
         "budget": config["budget"], "harness": current.to_dict(), "harness_id": current.id,
         "calibration": {"stop_reason": result["stop_reason"], "decisions": decisions,
-                        "search": experiment["search"], "validation": experiment["validation"]},
+                        "search": experiment["search"], "validation": experiment["validation"],
+                        "perception_selection": perception},
         "provenance": {"run": str(run), "run_identity": manifest["identity_hash"],
             "source": {k: v for k, v in identity["source"].items() if k in source_fields},
             "runtime": {k: v for k, v in identity.get("runtime", {}).items() if k in source_fields},

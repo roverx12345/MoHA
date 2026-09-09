@@ -68,10 +68,25 @@
 - Verify with `PYTHONPATH=src:<runtime-root> python -m unittest discover -s tests -v`.
   Also run the pinned runtime's full test suite when integration changes warrant it.
 
-- Source-relative observer execution lives in `execution.py`: independent target
-  frames, source edge ratio and temporal/spatial/balanced priority. Keep the shared
+- Source-relative observer execution lives in `execution.py`: target sampling rate
+  0.5/1/2 FPS, source edge ratio and temporal/spatial/balanced priority. Translate
+  rates to min(ceil(rate * window duration), 128) explicit target frames before
+  budget allocation. Preserve auto (1 FPS) and fixed-frame renderer primitives,
+  but do not mix an explicit rate with fixed frames or present frame counts as rates.
+  Keep the shared
   feasible-set allocator, pinned renderer/token accounting, and existing OCR/ASR
   routes. Do not revive fixed-resolution presets or silently migrate old profiles.
-  Probe one fixed request with one fresh control and at most seven distinct
+  Probe one fixed request with one fresh control and at most six distinct
   one-coordinate alternatives; preflight media no-ops without model calls and
   require the actual receipt to verify a change before crediting a rescue.
+- With `perception_calibration=true`, structural adaptation keeps H0 visual
+  execution and changes only support modules/specialists. Specialist attribution
+  retains its fixed-support execution probes; other execution preferences are
+  deferred to the final validation stage rather than gated by Judge labels.
+  Freeze structure, then evaluate 0.5/1/2 FPS by 0.5/0.75/1.0 source edge ratios,
+  balanced priority and shared f_view=128. Use the same complete validation samples
+  and repeats for all nine policies, a separate final-stage episode cache, measured
+  utility and deterministic ties. Preserve the structural promotion gate; final
+  selection is a validation argmax. Never export a partial sweep as calibrated.
+  Keep actual window duration, target and realized frames/FPS/resolution and cap
+  truncation in receipts. Fixed planner settings do not imply fixed trajectories.

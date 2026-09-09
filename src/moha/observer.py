@@ -171,6 +171,14 @@ class _PlannedBackend:
 
 
 class PolicyObserverRegistry(ObserverRegistry):
+    def failure_receipt(self, **kwargs):
+        receipt = super().failure_receipt(**kwargs)
+        start, end = kwargs["window"]
+        request = kwargs["execution"].policy.sampling_request(end - start)
+        receipt["realized_execution"].update(request, realized_frames=None,
+            realized_fps=None, realized_resolution=None)
+        return receipt
+
     def observe(self, *, execution, **kwargs):
         if not isinstance(execution, PolicyExecution):
             raise TypeError("MoHA requires a source-relative execution policy")
@@ -189,6 +197,14 @@ class PolicyObserverRegistry(ObserverRegistry):
         # from the same active session metadata before rendering.
         realized["source_sha256"] = plan["source_sha256"]
         realized["allocation"] = plan
+        realized.update({k: plan[k] for k in ("window_duration", "target_fps", "requested_frames",
+            "target_frames", "frame_cap", "frame_cap_hit")})
+        frames = realized.get("sampled_frames")
+        realized["realized_frames"] = frames
+        realized["realized_fps"] = frames / plan["window_duration"] if frames is not None else None
+        realized["realized_resolution"] = copy.deepcopy(realized["resolution"])
+        # Report source-time sampling density, separately from encoded playback FPS.
+        realized["fps"] = realized["realized_fps"]
         # Retain processor-specific resize/token accounting separately from the
         # actual rendered resolution: processor minimum pixels can undo savings.
         realized["input_token_accounting"] = copy.deepcopy(view.get("input_token_accounting", {}))

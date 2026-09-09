@@ -49,6 +49,8 @@ class Harness:
             values = dict(settings)
             if len(values) != len(settings) or set(values) - set(CHOICES):
                 raise ValueError("unknown or duplicate execution field")
+            if values.get("target_fps", "absent") is None:
+                values.pop("target_fps")
             normalized = ExecutionPolicy(**values).to_dict()
             pairs.append((goal, tuple(sorted((k, normalized[k]) for k in values))))
         pairs = tuple(sorted(pairs))
@@ -58,6 +60,8 @@ class Harness:
             raise ValueError("specialists must be unique ocr/asr capabilities")
         object.__setattr__(self, "execution", pairs)
         object.__setattr__(self, "specialists", tuple(sorted(self.specialists)))
+        for goal in GOALS:
+            self.execution_for_goal(goal)  # Validate inherited rate/frame conflicts too.
 
     def execution_for_goal(self, goal: str) -> ExecutionPolicy:
         policies = dict(self.execution)

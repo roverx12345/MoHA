@@ -100,17 +100,22 @@ Planner 用 `video_player_observe(start_seconds, end_seconds, goal)` 直接选�
 
 `tools.py` 适配时间选择、schema 与 observer 执行策略，复用固定运行时的观察、specialist、预算与 receipt 路径。直接窗口的 receipt 保留实际时间与目标，`candidate_id` 为 `null`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_semantic_windows_v1` 标记此接口。改变时间选择能力需要新实验并重跑 H0，旧的 candidate-only episode 不能作为新接口的基线；既有冻结运行保持原接口。
 
-当前 observer harness 使用 `moha_source_relative_v1`，执行设置按观察目标独立继承默认值：
+当前 observer harness 使用 `moha_sampling_density_v2`。Planner 选择窗口，Harness
+选择窗口内的采样密度；执行时明确计算目标帧数，不依赖后端的 FPS 默认值。
+执行设置按观察目标独立继承默认值：
 
 | 坐标 | 候选值 | 含义 |
 | --- | --- | --- |
-| `frames` | `auto`、32、64、128 | 目标帧数；`auto` 为窗口秒数向上取整，保持原先 1 fps 的请求密度 |
+| `target_fps` | 0.5、1、2 | 语义采样密度；目标帧数为 `min(ceil(target_fps × window_duration), 128)` |
 | `source_scale` | 0.5、0.75、1.0 | 原视频两条边的比例上限，保持宽高比，不上采样 |
 | `priority` | `temporal`、`spatial`、`balanced` | 预算受限时保留时间信息、空间信息，或平衡两者 |
 
-H0 为 `auto / 1.0 / balanced`，所有模型从同一 H0 开始。目标级设置只覆盖写出的字段；
+H0 保留 `frames=auto / source_scale=1.0 / priority=balanced`，等价于目标 1 FPS，
+所有模型从同一 H0 开始。`frames=32/64/128` 保留为显式渲染原语，不进入采样策略 catalog；
+不能与 `target_fps` 同时指定。`auto` 随窗口长度增长，不表示每次固定采满 128 帧。
+例如 25 秒窗口在三档 FPS 下请求 13、25、50 帧。目标级设置只覆盖写出的字段；
 例如 `{"execution":{"default":{},"text":{"source_scale":0.75}}}` 只改变 text 的空间目标。
-catalog 为八类 typed goal 提供单字段候选，包括 speech；默认值用于继承，不作为全局校准候选。
+catalog 为八类 typed goal 提供单字段 probe 候选，包括 speech；最终九组选择统一设置默认策略。
 帧数和比例是目标上限，最终输入还受源帧数、codec 尺寸、`f_view/p_view/p_call/b_video` 约束。
 
 `execution.py` 在同一可行集合中分配预算：枚举不超过目标值的整数帧数，以及从目标边长比例开始每档乘 0.9 的降采样阶梯。
@@ -120,10 +125,55 @@ catalog 为八类 typed goal 提供单字段候选，包括 speech；默认值�
 Qwen processor 的最小像素要求可能把小画面放大，因此降低源画质不保证降低 token；receipt 分别保存源尺寸、渲染尺寸、帧时间戳和 processor 计量。
 
 固定窗口 probe 先进行不调用模型的分配检查，跳过与基线或已选候选产生相同媒体的配置。
-每条 trace 最多检查一个请求、一份新基线和七个不同的单字段候选（3 个帧数、2 个比例、2 个模式），
+每条 trace 最多检查一个请求、一份新基线和六个不同的单字段候选（2 个 FPS、2 个比例、2 个模式），
 找到 rescue 即停止。每个逻辑观察仍最多进行一次格式修复；全部实际成本入账。
 实际 receipt 再核对源文件、帧时间戳、帧数和完整画面尺寸，不能只按参数名声称发生改变。
-只有得到 rescue 的具体执行候选能进入该 trace 的最终提案；匹配类型的 `no_rescue` 才开放已有 OCR/ASR 路由。
+匹配类型的 `no_rescue` 才开放已有 OCR/ASR 路由。启用最终 perception calibration 后，
+这些 probe 仅用于 specialist 的能力归因；视觉执行参数在最后用 validation 直接选择，
+不再依靠 Judge 的 observer 标签触发。关闭最终阶段时，只有得到 rescue 的具体执行候选能进入提案。
+
+`realized_execution` 为每次通用观察记录 `window_duration / target_fps / requested_frames /
+target_frames / realized_frames / realized_fps / realized_resolution / frame_cap_hit`。
+其中 requested_frames 是截断前的目标，target_frames 只施加统一 128 帧上限；
+源帧数、单次像素及 token 约束由 allocator 继续处理。realized_frames 来自实际 receipt，
+realized_fps 定义为实际帧数除以原窗口时长，而不是将目标 FPS 当成实际值。
+`frame_cap_hit=true` 明确表示截断前目标超过 128；恰好等于 128 不算被截断。
+失败观察保留请求字段，未知的实际执行写为 null。specialist 仍保留其独立媒体路径与 receipt。
+
+### 最终 perception calibration
+
+新模板启用 `"perception_calibration": true`。主循环只调整 Planner 支持模块与
+经 probe 支持的 specialist 路由，保持 H0 的视觉执行配置。结构调整结束后冻结得到
+的模块、路由、Planner 设置和预算，在同一 validation 清单上完整评估九组：
+
+| target_fps | source_scale=0.5 | source_scale=0.75 | source_scale=1.0 |
+| --- | --- | --- | --- |
+| 0.5 | fps0.5_scale0.5 | fps0.5_scale0.75 | fps0.5_scale1 |
+| 1 | fps1_scale0.5 | fps1_scale0.75 | **fps1_scale1：默认执行** |
+| 2 | fps2_scale0.5 | fps2_scale0.75 | fps2_scale1 |
+
+九组统一 `priority=balanced`、`f_view=128`，源比例是边长比例。默认执行与结构阶段
+结束时的 Harness 哈希相同，不人为降低 H0 画质。这里只冻结 Planner 的配置，完整
+episode 内的实际观察窗口仍由 Planner 根据反馈选择，不能把这些轨迹当成固定窗口 probe。
+
+复用 `validation.repeats` 和原 episode 调度器，每个 repeat 默认配置先行，再按 grid
+顺序执行；后续 repeat 轮换起始配置。所有配置完成后，以
+`accuracy - cost_penalty × mean_cost / cost_scale` 选择最大效用。可选 `max_cost_ratio`
+相对默认配置限制开销；效用完全相同时先保留默认配置，再按较低实际成本和配置 ID 排序。
+默认 cost_penalty=0，因此按准确率选择。原 `min_gain`、区间和 repeat 门限继续用于
+结构晋升，不额外约束最终 argmax；九组相对默认的成对结果、区间与实际执行统计仍完整保存。
+这些区间描述 validation 比较，不校正九组模型选择，也不是独立测试结果。
+
+最终阶段使用单独的 `perception_validation` 缓存空间，包含九组中默认配置的新评估，
+不混用前面结构晋升的缓存。完整单元结果保存在原 episodes 目录，中断后只补缺失项，
+不重新诊断或改变冻结结构。`perception/plan.json` 在调用前冻结九组与样本；
+`perception/scores/` 保存每组准确率、成本、配对结果和逐 repeat 的实际执行统计；
+`perception/result.json` 保存最终选择。仅全部完成后生成最终 frozen_harness，export
+同时检查结构历史与九组选择的 provenance。
+
+`doctor` 显示九组和所需 episode 数：`9 × validation 样本数 × repeats`。
+模板仍使用既有 64 cal / 32 val，默认最终阶段为 288 个 episode；没有自动扩容数据集。
+省略该开关或设为 false 可关闭最终阶段，保留单字段诊断/probe/validation 调整，用于对照。
 
 本次改变了 H0 与 observer catalog，必须创建新实验并从 H0 完整校准。旧的字符串预设配置显式拒绝加载，
 不能把旧 profile 或缓存自动转换为新策略。`calibrated/` 中既有结果继续对应其记录的冻结源码与 catalog；
@@ -141,13 +191,14 @@ MOHA_WHISPER_GPU=1 bash scripts/serve_whisper.sh > /path/outside/repo/whisper.lo
 
 默认复用已有权重与 vLLM 环境，监听 `127.0.0.1:8093`，最多并发两条请求，显存比例设为 0.08。GPU、端口、vLLM 路径和权重路径可通过脚本中列出的 `MOHA_WHISPER_*` 环境变量指定。
 
-校准流程只有一条主线：**Trace → Judge → Aggregate → Validation**。没有全局 LLM selector，也不接受 `models.selector` 配置。
+结构校准主线为 **Trace → Judge → Aggregate → Validation**，结束后按开关进入上述最终
+perception calibration。没有全局 LLM selector，也不接受 `models.selector` 配置。
 
 1. Judge 读取每条失败 calibration trace，同时给出归因、证据步骤、`candidate_id` 和 `proposal_reason`。候选只能来自当前可执行 catalog，或为 `null`。`confidence` 仅表示归因置信度，不参与计票；没有失败标签到模块的硬编码映射。
-2. 若归因为 observer，首次提案必须为 `null`。先在同一窗口、目标、observer 下做执行设置 probe，再让同一个 Judge 根据该 trace 和实际 probe 结果完成局部提案。只有匹配 text/speech 目标的 `no_rescue` 才开放对应 OCR/ASR specialist。probe 不确定时不能据此宣称能力缺失。
+2. 若归因为 observer，首次提案必须为 `null`。涉及可用 OCR/ASR 时，先在同一窗口、目标、observer 下做执行设置 probe，再让同一个 Judge 完成局部提案；只有匹配 text/speech 目标的 `no_rescue` 才开放对应 specialist。启用最终阶段时，其他 observer 执行偏好留到九组直接评估；未启用时仍按 probe 支持的具体执行候选提案。probe 不确定时不能据此宣称能力缺失。
 3. 每条有效失败 trace 最多一票。按支持样本数降序排序，同票按完整 candidate ID 的字典序排列。`unresolved`、弃权、错误以及不再合法的提案不投票。
 4. 每轮冻结一次提案集合。在预设候选预算内依次验证排名最高的候选；拒绝后移除它，使用原票数的下一名，不要求 Judge 改投。成功后更新 harness，并在下一轮产生新的 trace 和提案。已启用、无实际作用及此前被拒绝的候选不再参与。
-5. 验证集只用于原有成对收益门限，只有过门限才 promote。无支持候选时保留原有 patience 与失败分布稳定性停止规则。预算耗尽本身不证明某项语义失败。
+5. 结构修改使用原有成对收益门限，只有过门限才 promote。无支持候选时保留原有 patience 与失败分布稳定性停止规则。预算耗尽本身不证明某项语义失败。结构结束后，启用的最终 perception 阶段使用同一 validation 进行模型选择；独立测试只评选好的最终 Harness。
 
 这个规则衡量跨 trace 的支持度，不声称求得全局最优或证明局部归因。验证集被多轮使用后仍需独立最终测试集。默认每轮最多验证两个候选；每轮最多接受一个，接受即结束该轮。
 

@@ -91,8 +91,8 @@ class ObserverResolver:
         from dataclasses import replace
         from .observer import PolicyExecution
         from video_os.core.errors import BudgetExceeded
-        # One cited request, one control, and at most seven unique alternatives:
-        # the complete one-coordinate neighbourhood (3 frames + 2 scale + 2 mode).
+        # One cited request, one control, and at most six unique alternatives:
+        # the complete rate-policy neighbourhood (2 rates + 2 scales + 2 modes).
         original = valid[0]
         goal = original["goal"]["type"]
         try:

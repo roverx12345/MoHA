@@ -41,6 +41,7 @@ def main(argv=None):
         prepared = prepare(args.config, repo)
         if args.command == "doctor":
             from .serving import media_io_kwargs
+            from .perception import policy_grid
             result = {"inputs_valid": True, "clean_worktree": not prepared["identity"]["source"]["dirty"],
                       "clean_runtime": not prepared["identity"]["runtime"]["dirty"],
                       "runtime_commit": prepared["identity"]["runtime"]["commit"],
@@ -49,6 +50,10 @@ def main(argv=None):
                       "execution_lanes": list(prepared["observer_endpoints"]),
                       "planner_endpoints": list(prepared["planner_endpoints"]),
                       "diagnosis_workers": len(prepared["clients"]["judges"]),
+                      "final_perception_grid": policy_grid(prepared["initial"])
+                          if prepared["config"].get("perception_calibration", False) else None,
+                      "final_perception_episodes": 9 * len(prepared["validation"]) * prepared["policy"].repeats
+                          if prepared["config"].get("perception_calibration", False) else 0,
                       "observer_media_loading": {
                           "required_media_io_kwargs": media_io_kwargs(prepared["config"])
                               if prepared["budget"].f_view is not None else None,

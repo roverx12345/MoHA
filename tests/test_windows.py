@@ -139,6 +139,42 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(receipt["window"], [3, 43])
         self.assertIsNone(receipt["candidate_id"])
         self.assertEqual(receipt["goal"], GOAL)
+        self.assertEqual(receipt["realized_execution"]["target_frames"], 40)
+        self.assertEqual(receipt["realized_execution"]["target_fps"], 1)
+        self.assertIsNone(receipt["realized_execution"]["realized_frames"])
+
+    def test_rate_reaches_explicit_frame_wire_and_actual_receipt(self):
+        for fps, expected in ((0.5, 13), (1, 25), (2, 50)):
+            service = Service()
+            harness = Harness.from_dict({"execution": {"default": {"target_fps": fps}}})
+            episode = EpisodeRunner(service, Planner([observe(5, 30), ANSWER])).run(harness, sample("unit"), 0)
+            self.assertEqual(episode.status, "completed", episode.raw)
+            wire = service.calls[-1][1]
+            self.assertNotIn("fps", wire)
+            self.assertEqual(wire["experiment_render"]["requested_frames"], expected)
+            r = receipts(episode.events)[0]["realized_execution"]
+            self.assertEqual(r["window_duration"], 25)
+            self.assertEqual(r["target_fps"], fps)
+            self.assertEqual(r["target_frames"], expected)
+            self.assertEqual(r["realized_frames"], expected)
+            self.assertEqual(r["realized_fps"], expected / 25)
+            self.assertEqual(r["realized_resolution"], [640, 360])
+            self.assertFalse(r["frame_cap_hit"])
+
+    def test_receipt_uses_realized_frames_when_other_budgets_bind(self):
+        class Limited(Service):
+            def plan_observer_execution(self, session_id, window, policy):
+                from test_execution import renderer, media
+                from moha.execution import allocate
+                return allocate(renderer(b_video=512), media(), window, policy)
+        harness = Harness.from_dict({"execution": {"default": {"target_fps": 2}}})
+        episode = EpisodeRunner(Limited(), Planner([observe(0, 60), ANSWER])).run(harness, sample("unit"), 0)
+        self.assertEqual(episode.status, "completed", episode.raw)
+        r = receipts(episode.events)[0]["realized_execution"]
+        self.assertEqual(r["target_frames"], 120)
+        self.assertLess(r["realized_frames"], 120)
+        self.assertEqual(r["realized_fps"], r["sampled_frames"] / 60)
+        self.assertFalse(r["frame_cap_hit"])
 
     def test_probe_reuses_direct_window_without_retrieval(self):
         from moha.probes import ProbeRunner

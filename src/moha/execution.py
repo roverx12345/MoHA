@@ -3,11 +3,13 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass
 
-EXECUTION_POLICY = "moha_source_relative_v1"
+EXECUTION_POLICY = "moha_sampling_density_v2"
+FRAME_CAP = 128
+SAMPLING_RATES = (0.5, 1.0, 2.0)
 MIN_DETAIL_FRACTION = 0.25
 GOALS = ("default", "general", "presence", "attribute", "count", "text", "speech", "relation", "sequence")
 CHOICES = {"frames": ("auto", 32, 64, 128), "source_scale": (0.5, 0.75, 1.0),
-           "priority": ("temporal", "spatial", "balanced")}
+           "priority": ("temporal", "spatial", "balanced"), "target_fps": SAMPLING_RATES}
 
 
 @dataclass(frozen=True)
@@ -15,18 +17,41 @@ class ExecutionPolicy:
     frames: str | int = "auto"
     source_scale: float = 1.0
     priority: str = "balanced"
+    target_fps: float | None = None
 
     def __post_init__(self):
         for key, choices in CHOICES.items():
             value = getattr(self, key)
+            if key == "target_fps" and value is None:
+                continue
             if isinstance(value, bool) or value not in choices:
                 raise ValueError(f"unsupported execution {key}: {value!r}")
         if self.frames != "auto" and type(self.frames) is not int:
             raise ValueError("frames must be auto or a catalog integer")
         object.__setattr__(self, "source_scale", float(self.source_scale))
+        if self.target_fps is not None:
+            if self.frames != "auto":
+                raise ValueError("choose target_fps or fixed frames, not both")
+            object.__setattr__(self, "target_fps", float(self.target_fps))
+
+    @property
+    def sampling_rate(self):
+        # Fixed-frame primitives remain available for explicit renderer work.
+        return (self.target_fps if self.target_fps is not None else 1.0) if self.frames == "auto" else None
 
     def to_dict(self):
-        return asdict(self)
+        values = asdict(self)
+        if self.target_fps is None:
+            values.pop("target_fps")
+        return values
+
+    def sampling_request(self, duration):
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+            raise ValueError("window duration must be positive finite seconds")
+        requested = math.ceil(duration * self.sampling_rate) if self.frames == "auto" else self.frames
+        return {"window_duration": duration, "target_fps": self.sampling_rate,
+                "requested_frames": requested, "target_frames": min(requested, FRAME_CAP),
+                "frame_cap": FRAME_CAP, "frame_cap_hit": requested > FRAME_CAP}
 
 
 def allocate(renderer, media, window, policy):
@@ -41,8 +66,9 @@ def allocate(renderer, media, window, policy):
     if not 0 <= start < end <= media.duration_seconds:
         raise ValueError("invalid fixed observation window")
     duration = end - start
-    target = math.ceil(duration) if policy.frames == "auto" else policy.frames
-    target = min(target, 128, renderer.budget.f_view, max(1, math.ceil(duration * media.frame_rate)))
+    request = policy.sampling_request(duration)
+    target = min(request["target_frames"], renderer.budget.f_view,
+                 max(1, math.ceil(duration * media.frame_rate)))
     if renderer.token_profile is None:
         raise ValueError("source-relative allocation requires a calibrated token profile")
     # Share a meaningful quality floor across priorities. Use the best shape
@@ -92,8 +118,8 @@ def allocate(renderer, media, window, policy):
     if best is None:
         raise BudgetExceeded("no source-relative visual packet fits the shared budget")
     _, frames, resolution, cap, tokens = best
-    return {"policy": EXECUTION_POLICY, "requested": policy.to_dict(),
-            "source_resolution": [media.width, media.height], "target_frames": target,
+    return {"policy": EXECUTION_POLICY, "requested": policy.to_dict(), **request,
+            "source_resolution": [media.width, media.height], "allocation_frame_limit": target,
             "minimum_resolution": list(minimum), "minimum_detail_fraction": MIN_DETAIL_FRACTION,
             "frames": frames, "resolution": list(resolution), "video_tokens": tokens,
             "source_scale_realized": min(resolution[0]/media.width, resolution[1]/media.height),

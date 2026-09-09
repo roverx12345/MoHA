@@ -49,7 +49,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(changed.execution_for_goal("text").to_dict(),
             {"frames": 64, "source_scale": 0.75, "priority": "spatial"})
         self.assertEqual(changed.execution_for_goal("sequence"), base.execution_for_goal("sequence"))
-        self.assertFalse(catalog()["observer.execution.text.frames.64"].available(base))
+        self.assertFalse(catalog()["observer.execution.text.target_fps.2.0"].available(base))
         self.assertFalse(mode.available(changed))
         self.assertEqual(Harness.from_dict(changed.to_dict()), changed)
 

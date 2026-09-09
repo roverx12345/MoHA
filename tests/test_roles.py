@@ -6,6 +6,7 @@ from moha.models import Episode, Harness
 from moha.probes import ObserverResolver, realized_signature
 from moha.roles import DIAGNOSIS_SCHEMA, Judge, rank_candidates
 from moha.evidence import unpack
+from moha.execution import EXECUTION_POLICY
 
 
 def diagnosis(**kwargs):
@@ -123,7 +124,7 @@ class RoleTests(unittest.TestCase):
 class ExecutionEligibilityTests(unittest.TestCase):
     def test_execution_vote_requires_that_specific_probed_rescue(self):
         from moha.roles import eligible_for_trace
-        candidate = catalog()["observer.execution.text.frames.64"]
+        candidate = catalog()["observer.execution.text.target_fps.2.0"]
         available = [candidate]
         for resolution in ({}, {"status":"inconclusive"}, {"status":"execution_rescue","candidate_id":"different"}):
             self.assertEqual(eligible_for_trace(available,diagnosis(observer_resolution=resolution)),[])
@@ -133,7 +134,7 @@ class ExecutionEligibilityTests(unittest.TestCase):
 
 def receipt(fps=1):
     return {"receipt_id": "original", "observer_id": "omni", "observer_model": "test-omni", "window": [10, 20],
-            "goal": {"type": "general", "target": "action"}, "requested_execution": {"policy_version": "moha_source_relative_v1", "frames": "auto", "source_scale": 1.0, "priority": "balanced", "modalities": ["video"], "prompt_profile": "generic"},
+            "goal": {"type": "general", "target": "action"}, "requested_execution": {"policy_version": EXECUTION_POLICY, "frames": "auto", "source_scale": 1.0, "priority": "balanced", "modalities": ["video"], "prompt_profile": "generic"},
             "realized_execution": {"fps": fps, "resolution": 384, "sampled_frames": 10*fps,
                                    "modalities": ["video"], "prompt_profile": "generic", "source_sha256": "unit-source",
                                    "frame_timestamps_seconds": [10+i/fps for i in range(10*fps)]}}
@@ -146,7 +147,7 @@ class FakeProbe:
     def plan(self, sample, original, execution):
         policy = execution.policy
         return {"source_sha256": "unit-source", "window": original["window"],
-                "frames": policy.frames, "resolution": [policy.source_scale, policy.priority]}
+                "frames": policy.sampling_request(10)["target_frames"], "resolution": [policy.source_scale, policy.priority]}
 
     def observe(self, sample, original, execution, candidate_id="baseline"):
         self.calls.append((sample, original, candidate_id))
@@ -166,7 +167,7 @@ class ProbeTests(unittest.TestCase):
         runner = FakeProbe()
         result = self.resolve(runner, FakeClient({"baseline_supports_goal": False, "alternative_supports_goal": True, "reason": "required action recovered"}))
         self.assertEqual(result["status"], "execution_rescue")
-        self.assertEqual([c[2] for c in runner.calls], ["baseline", "observer.execution.general.frames.128"])
+        self.assertEqual([c[2] for c in runner.calls], ["baseline", "observer.execution.general.priority.spatial"])
         self.assertEqual(runner.calls[0][1], runner.calls[1][1])
 
     def test_baseline_also_recovers_not_execution_rescue(self):
@@ -188,7 +189,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result["status"], "inconclusive")
         self.assertEqual(runner.calls, [])
         self.assertEqual(client.requests, [])
-        self.assertEqual(len(result["skipped"]), 7)
+        self.assertEqual(len(result["skipped"]), 6)
 
     def test_only_available_candidates_can_be_probed(self):
         runner, client = FakeProbe(), FakeClient()

@@ -77,6 +77,27 @@ class ProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside"):
             export_profile(self.run, self.run / "calibrated")
 
+    def test_export_checks_final_grid_selection_in_addition_to_structural_history(self):
+        from test_perception import RateRunner
+        from moha.demo import DemoJudge, sample
+        from moha.loop import Calibrator, SearchPolicy
+        from moha.models import ValidationPolicy
+        from moha.store import RunStore
+        path = self.root / "perception-run"
+        with RunStore(path, self.identity) as store:
+            Calibrator(runners=[RateRunner()], judges=[DemoJudge()], store=store,
+                calibration=[sample("cal")], validation=[sample(f"val{i}") for i in range(3)],
+                search=SearchPolicy(max_rounds=2), validation_policy=ValidationPolicy(bootstrap_samples=20),
+                perception_calibration=True).run()
+        profile = calibrated_profile(path)
+        self.assertEqual(profile["calibration"]["perception_selection"]["selected_policy_id"], "fps2_scale0.75")
+        self.assertEqual(profile["harness"]["execution"]["default"]["target_fps"], 2)
+        self.assertNotIn("SECRET", json.dumps(profile))
+        score = path / "perception/scores/fps2_scale0.75.json"
+        score.unlink()
+        with self.assertRaisesRegex(ValueError, "scores"):
+            calibrated_profile(path)
+
 
 if __name__ == "__main__":
     unittest.main()
