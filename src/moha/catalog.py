@@ -43,8 +43,8 @@ class Intervention:
 def catalog() -> dict[str, Intervention]:
     modules = {
         "overview": ("overview", "Prefetch a navigation-only overview before planning; it consumes perception budget and supplies coarse regions, not answer evidence."),
-        "memory_basic": ("memory", "Retain whole source-linked observations, including their window, goal, facts, missing evidence and uncertainties, across history truncation. Within half the history token allowance, prefer two early observations then recent ones; omit whole records, never truncate claims or merge conflicts. It acquires and verifies no new evidence."),
-        "verification_basic": ("verification", "Expose the advisory evidence ledger and coverage/conflict feedback as planner context; never force a verification tool call or block answers."),
+        "memory_basic": ("memory", "Expose original result and working-note ledgers through memory_read and memory_note. Preserve complete scoped observations across history truncation without summarizing, ranking or merging. Notes are supplied by the planner."),
+        "verification_basic": ("verification", "Expose verify_fresh: one independent prompt-only diagnosis of original text evidence. It uses the shared model-call budget and returns natural text without rule-based coverage or enforced verdicts. Without memory, only currently visible observations are available."),
         "retrieval_basic": ("retrieval_guard", "Enable the existing retrieval-stagnation intervention."),
     }
     items = [Intervention(f"planner.module.{key}", field, True, text)

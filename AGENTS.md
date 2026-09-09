@@ -10,7 +10,10 @@
 - Preserve the paper's shared H0, catalog-constrained single-coordinate proposals,
   calibration/validation separation, fixed-support observer probes, and validation
   gate. Diagnoses are hypotheses, not fixed intervention-routing rules.
-- Keep two planner tools. `observe(start_seconds, end_seconds, goal)` selects
+- Keep two Video OS tools, plus module tools only when enabled: memory_read /
+  memory_note for memory and verify_fresh for verification. The user authorized
+  these native module tools in place of the separate MCP experiment.
+  `observe(start_seconds, end_seconds, goal)` selects
   exact valid source-time support, independent of search candidate IDs. Planner
   controls temporal scope; harness controls sampling and observer routing. Keep
   the thin window adapter in `tools.py`, reusing the pinned execution path.
@@ -27,11 +30,15 @@
   leave audit-only observation histories in full logs. Do not restore evicted
   facts outside the explicit memory module. A changed projection needs a fresh
   full calibration, including H0; never relabel cached old-policy episodes.
-- Memory keeps whole scoped observations and their missing/uncertainty fields,
-  without summarizing, clipping claims, or merging same-ID conflicts. Its bounded
-  view reserves part of the existing history allowance. Compaction must not
-  declare newer evidence authoritative. Reserve the final existing planner call
-  for an answer/abstention; never execute tools on it or add a free extra call.
+- Memory is an append-only result ledger and a separate working-note ledger.
+  Keep original observations, duplicate records, conflicts, scope and caveats.
+  Planner reads original records and writes notes explicitly; no summaries,
+  ranking, automatic merging or fixed early/recent memory selection.
+- Verification is one fresh text-only prompt over original observations, without
+  working notes, prior planner dialogue, screenshots, rule-based coverage, verdict
+  schemas or repair loops. Without memory, do not restore history-evicted evidence.
+  Charge diagnosis requests to the shared max_steps model-call allowance and
+  preserve one final planner response; never force diagnosis or block an answer.
 - Commit coherent changes before real model calls. Both this checkout and the
   pinned runtime must be clean. Record source/runtime commits, input/config hashes,
   provider identities, command, environment, and output location for every run.

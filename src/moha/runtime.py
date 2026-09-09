@@ -5,11 +5,12 @@ import uuid
 from .models import Harness, Sample, canonical
 from .records import normalize, visible_observations
 from .context import PLANNER_CONTEXT_POLICY, bounded_history
-from .memory import MEMORY_POLICY, ObservationMemory
+from .memory import MEMORY_POLICY, ObservationMemory, memory_tools
+from .verification import VERIFICATION_POLICY, diagnosis_messages, verification_tool, visible_records
 from .answers import ANSWER_PARSING_POLICY, terminal_json_answer
 
 
-PLANNER_COMPLETION_POLICY = "moha_reserved_final_call_v1"
+PLANNER_COMPLETION_POLICY = "moha_shared_diagnosis_budget_v1"
 
 
 PLANNER_PROMPT = """Answer the video question using the supplied Video OS tools.
@@ -20,19 +21,23 @@ events. Search candidates are hints; expand or reposition the window when contex
 is needed. The harness controls sampling and observer selection. Follow each tool's
 schema. For observer goals, reference
 is valid only for relation; omit it for all other goal types. Memory and verification
-feedback, if supplied, are advisory. Resolve uncertainty using your judgment within
+diagnoses, if supplied, are advisory. When memory tools are available, result memory
+stores original observations and working memory stores notes you choose to write.
+Use verify_fresh when an independent diagnosis would help; it reads original text
+observations in a fresh context and costs one of the shared remaining model calls.
+Resolve uncertainty using your judgment within
 the remaining budget. When ready, return a final JSON object with status 'answered'
 and answer equal to an option label, or status 'abstained' and answer null.
 The last remaining planner call is reserved for a final answer or explicit abstention;
 no tools can execute on that call. The final answer is an assistant message, not a
-tool call. Memory contains prior observations with their original scope and caveats;
-it is not a summary or verification, and omitted records do not imply absence."""
+tool call. Memory reads preserve original scope and caveats; they do not verify claims."""
 
 
 class RecordingRegistry:
     """Preserve unabridged results while the shared dispatcher compacts model input."""
-    def __init__(self, registry, emit):
+    def __init__(self, registry, emit, memory=None):
         self.registry, self.emit = registry, emit
+        self.memory = memory
         self.step, self.call_id = 0, None
         self.fatal_error = None
 
@@ -51,6 +56,8 @@ class RecordingRegistry:
                       result=_error_result(exc, tool=name))
             raise
         self.emit(kind="tool_result", step=self.step, tool=name, call_id=self.call_id, result=result)
+        if self.memory is not None:
+            self.memory.add(result)
         return result
 
 
@@ -63,10 +70,8 @@ class EpisodeRunner:
 
     def run(self, harness: Harness, sample: Sample, repeat: int):
         from video_os.agent.harness import VideoToolRegistry, ToolDispatcher, _tool_message
-        from video_os.core.context import ConservativeTokenCounter
         from .tools import WindowPlayerRegistry, PLANNER_TOOL_POLICY
         from video_os.agent.compaction import _compact_initial_state
-        from video_os.agent.evidence import EvidenceLedger
         from video_os.agent.observer_registry import ObserverHarnessConfig, FixedObserverExecution
         from run_eval import _llm_extract_evaluation_answer
 
@@ -81,6 +86,7 @@ class EpisodeRunner:
         raw["planner_completion_policy"] = PLANNER_COMPLETION_POLICY
         raw["answer_parsing_policy"] = ANSWER_PARSING_POLICY
         raw["memory_policy"] = MEMORY_POLICY if harness.memory else None
+        raw["verification_policy"] = VERIFICATION_POLICY if harness.verification else None
         raw["execution_lane"] = {"index": self.lane, "observer_endpoint": getattr(self.service, "base_url", None)}
 
         def emit(**event):
@@ -94,6 +100,8 @@ class EpisodeRunner:
                              {"sample_id": sample.sample_id, "sample_hash": sample.id, "harness_id": harness.id,
                               "repeat": repeat, "execution_lane": raw["execution_lane"]}, immutable=True)
         session_id = None
+        used_calls = 0
+        memory = ObservationMemory() if harness.memory or harness.verification else None
         try:
             started = self.service.begin_episode(sample.asset_id)
             session_id = str(started["session_id"])
@@ -102,7 +110,7 @@ class EpisodeRunner:
             player = WindowPlayerRegistry(
                 VideoToolRegistry(self.service, session_id), started=started, initial_state=initial,
                 observer_profile="semantic_omni", player_tool_mode="bounded", compact_observe_schema=True,
-                evidence_enabled=harness.verification, commit_enabled=False,
+                evidence_enabled=False, commit_enabled=False,
                 observer_harness_config=ObserverHarnessConfig(), fixed_observer_execution=FixedObserverExecution(),
                 harness=harness,
                 observer_capability_assignment={"general_visual": "generalist",
@@ -110,11 +118,8 @@ class EpisodeRunner:
                     "asr": "asr_specialist" if "asr" in harness.specialists else "generalist"},
                 ocr_specialist_backend=self.ocr_backend, asr_specialist_backend=self.asr_backend,
                 retrieval_stagnation_guard=harness.retrieval_guard)
-            registry = RecordingRegistry(player, emit)
+            registry = RecordingRegistry(player, emit, memory)
             dispatcher = ToolDispatcher(registry)
-            ledger = EvidenceLedger.from_task(sample.task, require_commit=False) if harness.verification else None
-            memory = ObservationMemory() if harness.memory else None
-            counter = ConservativeTokenCounter()
             task_context = {"task": sample.task, "initial": _compact_initial_state(started, initial)}
             if harness.overview:
                 overview = player.initialize_overview()
@@ -125,33 +130,34 @@ class EpisodeRunner:
             messages.extend([{"role": "system", "content": PLANNER_PROMPT},
                              {"role": "user", "content": canonical(task_context)}])
             tools = player.schemas()
+            if harness.memory:
+                tools.extend(memory_tools())
+            if harness.verification:
+                tools.append(verification_tool())
             raw["tool_schemas"] = tools
-            for step in range(1, harness.max_steps + 1):
-                final_call = step == harness.max_steps
-                context = {"remaining_planner_calls": harness.max_steps - step + 1}
+            module_names = {t["function"]["name"] for t in tools} - {"video_player_search", "video_player_observe"}
+            while used_calls < harness.max_steps:
+                step = used_calls + 1
+                final_call = harness.max_steps - used_calls == 1
+                context = {"remaining_planner_calls": harness.max_steps - used_calls,
+                           "remaining_model_calls": harness.max_steps - used_calls}
                 if final_call:
                     context["final_answer_required"] = (
                         "This is the last planner call. Return a final answer or explicit abstention "
                         "using the available evidence. Tools are disabled; no further observations can execute.")
                 history_limit = harness.history_tokens
-                memory_audit = None
-                if memory is not None:
-                    bank, memory_audit = memory.snapshot(token_limit=max(1, harness.history_tokens // 2), count=counter.count)
-                    context["evidence_memory"] = bank
-                    context["memory_omitted_observations"] = memory_audit["omitted_observations"]
-                    history_limit = max(0, history_limit - memory_audit["tokens"])
-                if ledger:
-                    context["advisory_verification"] = ledger.feedback()
+                if harness.memory:
+                    context["memory_ledger"] = memory.inventory()
                 projected, audit = bounded_history(messages, token_limit=history_limit, max_turns=harness.history_turns)
                 audit["history_token_limit"] = history_limit
-                if memory_audit is not None:
-                    audit["memory"] = memory_audit
                 projected.append({"role": "user", "content": canonical(context)})
                 emit(kind="context", step=step, messages=projected, context=context, history_audit=audit,
                      visible_observations=visible_observations(projected))
+                used_calls += 1
                 response = self.planner.call(messages=projected, tools=tools,
                                              tool_choice="none" if final_call else "auto", parallel_tool_calls=False)
                 message = response.message()
+                turn_start = len(messages)
                 messages.append(message)
                 emit(kind="planner", step=step, message=message, metadata=dict(response.metadata))
                 if not response.tool_calls:
@@ -190,28 +196,51 @@ class EpisodeRunner:
                     try:
                         arguments = call.parse_arguments()
                         emit(kind="tool_call", step=step, tool=call.name, call_id=call.id, arguments=arguments)
-                        if ledger:
-                            ledger.register_action(call.name, arguments)
                     except Exception as exc:
                         result = dispatcher.error(exc, tool=call.name)
                         emit(kind="tool_result", step=step, tool=call.name, call_id=call.id, result=result)
                     else:
-                        result = dispatcher.invoke(call.name, arguments, session_id=session_id)
+                        if call.name in module_names:
+                            try:
+                                if call.name == "memory_read":
+                                    result = memory.read(**arguments)
+                                elif call.name == "memory_note":
+                                    result = {"working_note": memory.note(**arguments)}
+                                else:
+                                    records = memory.read("result")["result_memory"]
+                                    if not harness.memory:
+                                        # Verification alone must not restore history-evicted evidence.
+                                        records = visible_records(projected + messages[turn_start:])
+                                    fresh = diagnosis_messages(sample.task, records, **arguments)
+                                    if harness.max_steps - used_calls < 2:
+                                        raise ValueError("verification needs one diagnosis call and one remaining final planner call")
+                                    used_calls += 1
+                                    emit(kind="verification_request", step=step, messages=fresh, call_id=call.id)
+                                    diagnosis = self.planner.call(messages=fresh, tools=[], tool_choice="none",
+                                                                  parallel_tool_calls=False)
+                                    emit(kind="verification", step=step, message=diagnosis.message(),
+                                         metadata=dict(diagnosis.metadata), call_id=call.id)
+                                    result = {"diagnosis": diagnosis.message().get("content"),
+                                              "receipt": dict(diagnosis.metadata)}
+                                    if not isinstance(result["diagnosis"], str) or not result["diagnosis"].strip():
+                                        result.update(isError=True, error="provider returned no diagnosis text")
+                            except (ValueError, TypeError, KeyError) as exc:
+                                result = dispatcher.error(exc, tool=call.name)
+                            emit(kind="tool_result", step=step, tool=call.name, call_id=call.id, result=result)
+                        else:
+                            result = dispatcher.invoke(call.name, arguments, session_id=session_id)
                     messages.append(_tool_message(call.id, result))
                     if registry.fatal_error:
                         raise RuntimeError("tool infrastructure failure: " + registry.fatal_error)
-                    if memory is not None:
-                        memory.add(result)
-                    if ledger:
-                        ledger.update_from_tool_result(call.name, result)
             raw["player_state"] = player.snapshot()
-            if ledger:
-                raw["evidence_ledger"] = ledger.snapshot()
         except Exception as exc:
             raw["status"] = "error"
             emit(kind="error", step=len([e for e in raw["events"] if e["kind"] == "planner"]),
                  error_type=type(exc).__name__)
         finally:
+            raw["model_calls_used"] = used_calls
+            if harness.memory:
+                raw["memory"] = memory.read()
             if session_id is not None:
                 try:
                     raw["perception_receipt"] = self.service.receipt(session_id)

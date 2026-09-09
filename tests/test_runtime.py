@@ -104,8 +104,9 @@ class RuntimeTests(unittest.TestCase):
         observed = next(c[1] for c in service.calls if c[0] == "observe")
         self.assertEqual(observed["experiment_render"]["requested_frames"], 64)
         context = json.loads(planner.calls[-1]["messages"][-1]["content"])
-        self.assertTrue(context["evidence_memory"])
-        self.assertIn("advisory_verification", context)
+        self.assertEqual(context["memory_ledger"]["result_records"], 1)
+        self.assertNotIn("advisory_verification", context)
+        self.assertIn("verify_fresh", str(planner.calls[0]["tools"]))
 
     def test_planner_cleanup_preserves_full_audit_and_does_not_enable_memory(self):
         from moha.context import PLANNER_CONTEXT_POLICY
@@ -170,44 +171,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(planner.calls[0]["tool_choice"], "none")
         self.assertEqual([c[0] for c in service.calls], ["begin"])
 
-    def test_memory_survives_history_eviction_with_caveats_scope_and_shared_allowance(self):
+    def test_memory_read_restores_history_evicted_original_observation(self):
         class Scoped(Service):
             def inspect_window(self, session_id, **kwargs):
                 result = super().inspect_window(session_id, **kwargs)
                 index = int(kwargs["start_seconds"])
                 result["observation"].update(observation_id=f"obs{index}",
                     missing=[f"The prior action at {index} is not visible."],
-                    uncertainties=[f"The person at {index} cannot be identified."])
+                    uncertainties=["Identity unclear."])
                 result["observation"]["facts"][0]["fact"] = f"Observed action at {index}."
                 return result
         messages = [call("video_player_observe", {"start_seconds": i, "end_seconds": i + 5,
-                     "goal": {"type": "sequence", "target": f"action at {i}"}}, str(i)) for i in range(5)]
-        messages.append({"role": "assistant", "content": '{"answer":"A"}'})
-        for enabled in (False, True):
-            planner = Planner(copy.deepcopy(messages))
-            harness = Harness(memory=enabled, max_steps=6, history_turns=1)
-            result = EpisodeRunner(Scoped(), planner).run(harness, sample("cal"), 0)
-            self.assertEqual(result.status, "completed", result.raw)
-            event = [e for e in result.events if e["kind"] == "context"][-1]
-            history = event["messages"][:-1]
-            self.assertNotIn("Observed action at 0.", str(history))
-            self.assertNotIn("latest tool result and current budget/player state as authoritative", str(history))
-            self.assertIn("Newer observations do not automatically override", str(history))
-            context = json.loads(planner.calls[-1]["messages"][-1]["content"])
-            if enabled:
-                self.assertEqual(context["evidence_memory"], event["context"]["evidence_memory"])
-                first = context["evidence_memory"][0]
-                self.assertEqual(first["observation_context"]["window"], [0, 5])
-                self.assertEqual(first["observation_context"]["goal"]["target"], "action at 0")
-                self.assertEqual(first["observation"]["missing"], ["The prior action at 0 is not visible."])
-                self.assertEqual(first["observation"]["uncertainties"], ["The person at 0 cannot be identified."])
-                self.assertIn(first["observation"], event["visible_observations"])
-                audit = event["history_audit"]
-                self.assertLessEqual(audit["memory"]["tokens"], harness.history_tokens // 2)
-                self.assertEqual(audit["history_token_limit"] + audit["memory"]["tokens"], harness.history_tokens)
-            else:
-                self.assertNotIn("evidence_memory", context)
-                self.assertNotIn("Observed action at 0.", str(event["messages"]))
+                     "goal": {"type": "general", "target": "action"}}, str(i)) for i in range(5)]
+        messages.extend([call("memory_read", {"ledger": "result", "source_ids": ["obs0"]}),
+                         {"role": "assistant", "content": '{"answer":"A"}'}])
+        planner = Planner(messages)
+        result = EpisodeRunner(Scoped(), planner).run(Harness(memory=True, max_steps=7, history_turns=1), sample("cal"), 0)
+        self.assertEqual(result.status, "completed", result.raw)
+        self.assertNotIn("Observed action at 0.", str(planner.calls[-2]["messages"]))
+        self.assertIn("Observed action at 0.", str(planner.calls[-1]["messages"]))
+        record = result.raw["memory"]["result_memory"][0]
+        self.assertEqual(record["observation_context"]["window"], [0, 5])
+        self.assertEqual(record["observation"]["missing"], ["The prior action at 0 is not visible."])
+        self.assertEqual(record["observation"]["uncertainties"], ["Identity unclear."])
 
     def test_explicit_abstention_and_natural_terminal_answer(self):
         for message, status, answer in [({"status": "abstained", "answer": None}, "abstained", None),
@@ -347,7 +333,7 @@ class WireTests(unittest.TestCase):
         result = EpisodeRunner(Service(), planner).run(Harness(max_steps=3, memory=True), sample("cal"), 0)
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
         self.assertEqual([c["tool_choice"] for c in transport.calls], ["auto", "auto", "none"])
-        self.assertIn("evidence_memory", transport.calls[-1]["messages"][-1]["content"])
+        self.assertIn("memory_ledger", transport.calls[-1]["messages"][-1]["content"])
 
     def test_text_boundary_keeps_video_metadata_in_actual_user_message(self):
         from video_os.core.dispatch import sanitize_gpt_text_payload

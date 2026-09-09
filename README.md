@@ -159,13 +159,13 @@ MOHA_WHISPER_GPU=1 bash scripts/serve_whisper.sh > /path/outside/repo/whisper.lo
 
 这一步只清理已有输入，不总结或找回已被历史截断丢弃的事实，也不隐式开启 memory。事实附带的来源 ID 与空挂的历史 ID 区别处理；相同 observation ID 下出现的矛盾正文仍分别保留。
 
-`memory_basic` 由 `memory.py` 实现，按完整 observation 保留 planner 已收到的事实正文、来源、窗口、目标、采样信息、`missing`、`uncertainties` 和 refinement。没有额外 LLM 总结，也不再按 10 条 fact、每条 240 字符截断。零事实但包含缺失信息的观察仍可保留；相同 ID 下的不同正文或限定条件分别保存，仅完全相同的记录去重。
+`memory_basic` 由 `memory.py` 实现两个追加式账本：`result_memory` 原样保存成功观察的正文、窗口、目标、采样信息与所有限定字段，包括完全重复记录和同ID冲突；`working_memory` 保存 planner 通过 `memory_note` 写下的原文。`memory_read` 按 result/working/both 和可选 source IDs 读取原记录。没有自动摘要、排序、合并、前两条锚点或语义索引。每步只显示账本条数与来源ID，取回的原文与普通工具结果一样经过既有历史投影和预算。
 
-Memory 最多占 `history_tokens` 的一半，按固定运行时的保守 token 估计计数：先放入能容纳的前两条 observation，再从新到旧填充，展示时恢复发生顺序。超出容量时整条省略，不能只留下事实而删除其限定条件；省略条数明确告知 planner，完整记录仍在审计轨迹中。实际 memory 用量从原历史 token 配额扣除，剩余额度用于原有历史选择，因此不靠另加一份历史预算实现记忆。原历史上限仍是 advisory：保留的锚点和最新完整工具轮可能超额，system/task、工具 schema 及控制反馈也不属于该历史配额；这不是总 API 输入的硬上限。
+`verification_basic` 开启原生 `verify_fresh(diagnostic_question?, source_ids?)`：同一个配置的文本模型在两个新消息中，读取原问题、待诊断问题、原始观察及其窗口，返回自然语言诊断。输入没有工作笔记、历史planner对话、观察目标、视频截图或选项列表。没有覆盖率规则、判定枚举、JSON诊断输出要求或自动修复重试。结果原样返回，planner自行决定继续观察、修改判断或作答。未开启memory时，诊断只能使用当前历史投影中仍可见的观察，不能借verification找回已被截断的证据。
 
-压缩提示明确区分当前 player/预算状态与观察证据，不再将最新工具结果整体视为权威。否定和缺失信息仅适用于所述窗口与目标，不等于全视频不存在该事件；新观察不能自动覆盖旧的相反证据。context 事件的 `visible_observations` 同时统计保留的工具正文和实际送出的 memory，按内容去重，保留同 ID 的冲突。
+两个视频工具保留；只在相应模块开启时增加memory读写或verify工具。默认H0不增加任何模块工具。旧的EvidenceLedger覆盖率/complete反馈已退出正式episode循环。
 
-所有 harness 都在既定 `max_steps` 内预留最后一次 planner 调用用于回答或明确弃权（默认第 16 次），以免最后一步取得观察后无机会使用。该调用携带 `tool_choice: none` 和明确收尾提示，不增加额外调用。若 provider 仍返回工具调用，记录原始输出和 `tool_calls_on_reserved_final_call`，不执行这些工具，结果保持 `budget_exhausted`。轨迹分别记录 `planner_completion_policy` 和启用时的 `memory_policy`；较早作答不受阻拦。
+`max_steps` 是共享的planner加diagnosis模型调用额度。诊断花费一次现有调用，必须还留一次planner响应供其使用诊断并作答；预算不足时返回工具错误，不自动调用或扩充额度。所有harness最后一次调用仍禁用工具。轨迹记录`verification_request`（实际两消息输入）、`verification`（原文及provider元数据）、`memory`（最终两个账本）及分别计数的`planner_calls / verification_calls / model_calls`。模型诊断失败不触发额外重试。
 
 修改投影会改变实际模型输入与可保留的历史范围，下一次必须从 H0 开始重新进行完整 calibration/validation，不能复用旧投影下的 episode 作为新基线。正在运行的实验继续使用其冻结源码和原有投影。
 
@@ -177,7 +177,7 @@ Memory 最多占 `history_tokens` 的一半，按固定运行时的保守 token 
 - 工具与 assistant 的 JSON 正文解析成完整对象，system/user 消息及非 JSON 文本保持原文，保留初始视频时长等元数据；不生成模型未返回的推理。不同时间出现的同一 observation 的不同内容不会按 ID 强行合并。底层文本接口继续过滤原始工具结果中的媒体句柄，不向文本模型传递视频或音频文件。
 - 重复 JSON 容器通过 `shared` 表引用。`unpack` 可还原完整语义数据；该结构只是存储去重，没有推断因果边。
 - observer 的最终提案同时看到完整单条 trace、实际 probe 输出及判定理由；没有跨样本代表 trace packet，也不把 validation/test 的样本、标签、轨迹或分数传给 Judge。
-- 较新的观察不自动覆盖旧观察；已纠正的错误仍可能消耗预算。冲突不自动判给 planner，也不自动启用 verification。现有 `verification_basic` 是辅助上下文模块，不是 planner 必须调用的工具。
+- 较新的观察不自动覆盖旧观察；已纠正的错误仍可能消耗预算。冲突不自动判给 planner，也不自动启用 verification。`verification_basic` 提供可选的独立诊断工具，不要求planner必须调用。
 
 论文方法部分需与此实现一致：将“诊断不提出修复、全局 selector 选择”的描述改为局部候选推荐、等权支持聚合和验证。固定 H0、离散单坐标 catalog、observer probe 与验证门限保持原定义。
 

@@ -38,6 +38,8 @@ def usage_from(events: list[dict], session: dict | None) -> dict:
     items = receipts(events)
     ledger = (session or {}).get("budget_ledger") or {}
     usage = {"observer_calls": len(items), "planner_calls": sum(e["kind"] == "planner" for e in events)}
+    usage["verification_calls"] = sum(e["kind"] == "verification_request" for e in events)
+    usage["model_calls"] = usage["planner_calls"] + usage["verification_calls"]
     usage["sensory_looks"] = numeric(ledger.get("look_used"))
     fields = {"sampled_frames": ("frames_used", ("sampled_frames", "frame_count")),
               "video_tokens": ("video_tokens_used", ("video_tokens", "vision_tokens")),
@@ -75,9 +77,11 @@ def normalize(sample: Sample, harness: Harness, repeat: int, raw: dict) -> Episo
     if answer is not None and answer not in sample.task["options"]:
         answer = None
     status = raw.get("status", "error")
+    usage = usage_from(events, raw.get("perception_receipt"))
+    usage["model_calls"] = raw.get("model_calls_used", usage["model_calls"])
     return Episode(sample.sample_id, sample.id, harness.id, repeat, list(sample.video_key),
                    sample.expected_answer, answer, status, events,
-                   usage_from(events, raw.get("perception_receipt")), raw)
+                   usage, raw)
 
 
 def visible_observations(messages):
