@@ -3,8 +3,8 @@
   "diagnosis_workers": 8,
   "perception_calibration": true,
   "media_root": "/home/jianghan/.cache/huggingface/hub/datasets--TencentARC--Video-Holmes/snapshots/02fcfc696a7e101bb0e3b8d620280bda717db3d0/video",
-  "calibration_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/calibration_input_manifest.json",
-  "validation_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/validation_input_manifest.json",
+  "calibration_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260910_cal96_val64_r01/calibration_input_manifest.json",
+  "validation_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260910_cal96_val64_r01/validation_input_manifest.json",
   "initial": {
     "max_steps": 16,
     "history_turns": 8,

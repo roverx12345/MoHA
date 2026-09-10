@@ -172,7 +172,12 @@ episode 内的实际观察窗口仍由 Planner 根据反馈选择，不能把这
 同时检查结构历史与九组选择的 provenance。
 
 `doctor` 显示九组和所需 episode 数：`9 × validation 样本数 × repeats`。
-模板仍使用既有 64 cal / 32 val，默认最终阶段为 288 个 episode；没有自动扩容数据集。
+模板使用 96 cal / 64 val，默认最终阶段为 576 个 episode。新划分保留原 64/32 样本及顺序，
+从原 reserve 各新增 32 个视频，每视频一道题；按训练集题型分布和视频时长分层，
+calibration、validation 与剩余 reserve 视频互不重叠。划分及可复现记录位于
+`/home/jianghan/video_os_runs/video_holmes_grouped_split_20260910_cal96_val64_r01/`。
+这两组均来自 train，仅用于开发和配置选择；reserve 不代表从未用于历史实验的独立测试集。
+使用新清单应从 H0 建立新运行目录，已有 64/32 实验继续保留原清单和缓存。
 省略该开关或设为 false 可关闭最终阶段，保留单字段诊断/probe/validation 调整，用于对照。
 
 本次改变了 H0 与 observer catalog，必须创建新实验并从 H0 完整校准。旧的字符串预设配置显式拒绝加载，
