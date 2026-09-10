@@ -54,8 +54,8 @@ class RecordingRegistry:
         return getattr(self.registry, key)
 
     def invoke(self, name, arguments, **kwargs):
-        from video_os.agent.harness import _error_result
-        from video_os.core.errors import ProviderError, MediaError, CredentialError
+        from flat.agent.harness import _error_result
+        from flat.core.errors import ProviderError, MediaError, CredentialError
         try:
             result = self.registry.invoke(name, arguments, **kwargs)
         except Exception as exc:
@@ -78,11 +78,11 @@ class EpisodeRunner:
         self.lane = lane
 
     def run(self, harness: Harness, sample: Sample, repeat: int):
-        from video_os.agent.harness import VideoToolRegistry, ToolDispatcher, _tool_message
+        from flat.agent.harness import VideoToolRegistry, ToolDispatcher, _tool_message
         from .tools import WindowPlayerRegistry, PLANNER_TOOL_POLICY
-        from video_os.agent.compaction import _compact_initial_state
-        from video_os.agent.observer_registry import ObserverHarnessConfig, FixedObserverExecution
-        from run_eval import _llm_extract_evaluation_answer
+        from flat.agent.compaction import _compact_initial_state
+        from flat.agent.observer_registry import ObserverHarnessConfig, FixedObserverExecution
+        from flat.evaluation import _llm_extract_evaluation_answer
 
         attempt_id = uuid.uuid4().hex
         raw = {"schema": "moha_trajectory_v1", "attempt_id": attempt_id, "events": [],

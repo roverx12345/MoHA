@@ -20,7 +20,7 @@ ANSWER = {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}
 
 
 def response(value=GOOD, *, finish="stop", usage=True, tokens=80, input_tokens=600):
-    from video_os.providers.client import TransportResponse
+    from flat.providers.client import TransportResponse
     body = {"id": "offline", "model": "Qwen3-Omni-30B-A3B-Instruct",
         "choices": [{"message": {"content": value if isinstance(value, str) else json.dumps(value)},
                      "finish_reason": finish}]}
@@ -55,7 +55,7 @@ class ObserverTests(unittest.TestCase):
 
     def service(self, replies, *, original=False, backend="qwen3omni", budget=None, media=None):
         from moha.observer import ObserverService
-        from video_os.providers.core import VideoOSPerceptionService, AssetCatalog
+        from flat.providers.core import VideoOSPerceptionService, AssetCatalog
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         transport = Transport(replies)
@@ -74,8 +74,8 @@ class ObserverTests(unittest.TestCase):
 
     def test_source_relative_modes_reach_actual_media_and_audited_receipts(self):
         from dataclasses import replace
-        from video_os.providers.core import default_perception_budget
-        from video_os.agent.observer_registry import ObserverHarnessConfig, ObserverGoal
+        from flat.providers.core import default_perception_budget
+        from flat.agent.observer_registry import ObserverHarnessConfig, ObserverGoal
         from moha.observer import PolicyExecution, PolicyObserverRegistry
         from moha.execution import ExecutionPolicy
         from moha.probes import realized_signature
@@ -204,9 +204,9 @@ class ObserverTests(unittest.TestCase):
 
     def test_network_missing_usage_and_budget_errors_remain_fatal(self):
         from dataclasses import replace
-        from video_os.providers.core import default_perception_budget
-        from video_os.core.errors import ProviderError
-        from video_os.providers.client import TransportResponse
+        from flat.providers.core import default_perception_budget
+        from flat.core.errors import ProviderError
+        from flat.providers.client import TransportResponse
         failures = [TransportResponse(status=503, body=b"unavailable"), response(usage=False),
                     response("{", usage=False), response("{", input_tokens=1000000)]
         for reply in failures:
@@ -217,8 +217,8 @@ class ObserverTests(unittest.TestCase):
                 self.assertEqual(len(transport.calls), 1)
 
     def test_transport_failure_on_retry_is_not_converted_to_observer_evidence_error(self):
-        from video_os.core.errors import ProviderError
-        from video_os.providers.client import TransportResponse
+        from flat.core.errors import ProviderError
+        from flat.providers.client import TransportResponse
         service, transport = self.service([response("{"), TransportResponse(status=503, body=b"offline")])
         session = service.begin_episode("unit")["session_id"]
         with self.assertRaises(ProviderError):
@@ -241,8 +241,8 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 2)
 
     def test_non_observation_schema_is_not_retried(self):
-        from video_os.core.errors import ProviderResponseError
-        from video_os.providers.core import VideoOSPerceptionService
+        from flat.core.errors import ProviderResponseError
+        from flat.providers.core import VideoOSPerceptionService
         service, _ = self.service([])
         with patch.object(VideoOSPerceptionService, "_save_call", side_effect=ProviderResponseError("unusable")) as base:
             with self.assertRaises(ProviderResponseError):

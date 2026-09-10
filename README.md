@@ -1,5 +1,9 @@
 # MoHA
 
+当前源码：`/home/jianghan/MoHA/moha`；运行时：相邻独立仓库 `../flat`。
+Python 依赖为 `flat.*`，MCP 由 Flat 提供。新配置须固定新 Flat 提交；旧运行继续使用原冻结配置。
+
+
 这个目录是独立 Git 仓库，只保存一份当前实现。历史修改通过 Git 查看；真实配置、实验输出和冻结运行记录放在仓库外。
 
 ```text
@@ -16,10 +20,10 @@ moha/
 
 ## 运行
 
-使用已有 Video OS Python 环境。源码模式不需要安装，也不需要修改父目录的 Python 包：
+使用已有 Flat Python 环境。源码模式不需要安装，也不需要修改父目录的 Python 包：
 
 ```bash
-cd /home/jianghan/video_os/moha
+cd /home/jianghan/MoHA/moha
 export PYTHONPATH="$PWD/src"
 PY=/home/jianghan/miniconda3/envs/llamafactory/bin/python
 
@@ -30,9 +34,9 @@ $PY -m moha run --config /path/outside/repo/config.json --output /path/outside/r
 $PY -m moha resume --config /path/outside/repo/config.json --output /path/outside/repo/run
 ```
 
-Video OS 的工具、媒体处理和模型适配器由 `config.runtime.root` 指定；`config.runtime.commit` 必须与该目录的提交完全一致。启动时检查模块实际导入路径，不扫描父目录中的历史版本。模板绑定了已修复视频结尾取整问题的干净运行时。要切换依赖，显式修改配置并创建新实验。
+Flat 的工具、媒体处理和模型适配器由 `config.runtime.root` 指定；`config.runtime.commit` 必须与该目录的提交完全一致。启动时检查模块实际导入路径，不扫描父目录中的历史版本。模板绑定了已修复视频结尾取整问题的干净运行时。要切换依赖，显式修改配置并创建新实验。
 
-MoHA 与 Video OS 分别记录 Git 提交、源码哈希和干净状态。`doctor` 检查输入、视频哈希与配置，不调用模型；真实推理要求两份代码均已提交。配置只保存凭据文件或环境变量引用，不保存密钥。
+MoHA 与 Flat 分别记录 Git 提交、源码哈希和干净状态。`doctor` 检查输入、视频哈希与配置，不调用模型；真实推理要求两份代码均已提交。配置只保存凭据文件或环境变量引用，不保存密钥。
 
 后续实验的 Judge 使用 apihy `claude-opus-4-8`（API 模型列表中的准确名称），
 地址为 `https://zgc.apihy.com`，响应模式为 `json_text`。`config.example.json`
@@ -96,7 +100,7 @@ Planner 用 `video_player_observe(start_seconds, end_seconds, goal)` 直接选�
  "goal": {"type": "sequence", "target": "Describe the events before and after the object falls."}}
 ```
 
-接口要求有限数值且 `0 <= start_seconds < end_seconds <= duration_seconds`；非法范围返回工具错误供 planner 修正，不静默移动、扩大、裁剪或取整窗口。帧率、分辨率、采样及 observer/specialist 路由仍由 harness 和固定 Video OS 执行层决定，原有媒体与预算约束继续生效。
+接口要求有限数值且 `0 <= start_seconds < end_seconds <= duration_seconds`；非法范围返回工具错误供 planner 修正，不静默移动、扩大、裁剪或取整窗口。帧率、分辨率、采样及 observer/specialist 路由仍由 harness 和固定 Flat 执行层决定，原有媒体与预算约束继续生效。
 
 `tools.py` 适配时间选择、schema 与 observer 执行策略，复用固定运行时的观察、specialist、预算与 receipt 路径。直接窗口的 receipt 保留实际时间与目标，`candidate_id` 为 `null`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_semantic_windows_v1` 标记此接口。改变时间选择能力需要新实验并重跑 H0，旧的 candidate-only episode 不能作为新接口的基线；既有冻结运行保持原接口。
 
@@ -186,7 +190,7 @@ calibration、validation 与剩余 reserve 视频互不重叠。划分及可复�
 
 模板中的 `specialists: ["ocr", "asr"]` 让两种 specialist 成为校准候选，H0 的 `harness.specialists` 仍为空。只有对应能力的 observer 失败经过执行设置 probe 后得到 `no_rescue`，Judge 才能为这条 trace 提出该 specialist；最终是否保留仍由独立验证决定。只配置模型不代表已经校准或启用。
 
-OCR 通过 QDD 的 `Qwen/Qwen3.5-4B` 执行，`image.key` 引用已有凭据。ASR 使用本地 `whisper-large-v3-turbo` 的转写接口；`asr.language: null` 表示自动识别语言。两者复用固定 VideoOS 的媒体与模型适配器，receipt 分别记录真实 specialist 模型名。缺少后端配置时不能把对应 specialist 加入候选。
+OCR 通过 QDD 的 `Qwen/Qwen3.5-4B` 执行，`image.key` 引用已有凭据。ASR 使用本地 `whisper-large-v3-turbo` 的转写接口；`asr.language: null` 表示自动识别语言。两者复用固定 Flat 的媒体与模型适配器，receipt 分别记录真实 specialist 模型名。缺少后端配置时不能把对应 specialist 加入候选。
 
 检查 GPU 空余显存后，可在仓库根目录启动 Whisper；日志目录必须在仓库外：
 
@@ -267,7 +271,7 @@ PYTHONPATH=src python -m moha evaluate --config /path/config.json \
 PYTHONPATH=src:/path/to/pinned/video-os python -m unittest discover -s tests -v
 ```
 
-测试覆盖证据去重的还原、冲突保留、上下文可见性、等权计票、同票排序、拒绝后续选、提案缓存与校准隔离、原有 schema/预算/缓存/验证门限，以及真实 Video OS registry 的离线集成。
+测试覆盖证据去重的还原、冲突保留、上下文可见性、等权计票、同票排序、拒绝后续选、提案缓存与校准隔离、原有 schema/预算/缓存/验证门限，以及真实 Flat registry 的离线集成。
 
 源码最初来自父仓库提交 `bc83ebb` 中的 MoHA 重写。现在的权威源码是这个独立仓库；父目录不再跟踪这里的文件。
 

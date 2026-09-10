@@ -11,7 +11,7 @@ from .store import RunStore
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Paper-aligned MOHA with a fixed Video OS runtime")
+    parser = argparse.ArgumentParser(description="Paper-aligned MoHA with a pinned Flat runtime")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("doctor", "run", "resume", "evaluate"):
         sub = commands.add_parser(name)

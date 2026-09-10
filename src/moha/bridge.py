@@ -35,7 +35,7 @@ def read_object(path):
 
 
 def credential(reference):
-    from video_os.core.credentials import load_gpt_credentials
+    from flat.core.credentials import load_gpt_credentials
     if set(reference) == {"env"}:
         key = os.environ.get(reference["env"], "")
         if not key.strip():
@@ -49,9 +49,9 @@ def credential(reference):
 
 
 def text_client(config, budget, *, structured=False):
-    from video_os.core.dispatch import ProviderRole
-    from video_os.providers.client import OpenAICompatibleAdapter, ProviderSpec
-    from video_os.agent.planner import OpenAICompatiblePlannerClient
+    from flat.core.dispatch import ProviderRole
+    from flat.providers.client import OpenAICompatibleAdapter, ProviderSpec
+    from flat.agent.planner import OpenAICompatiblePlannerClient
     if set(config) != {"spec", "key"}:
         raise ValueError("text model configuration requires spec and key only")
     if "role" in config["spec"]:
@@ -67,8 +67,8 @@ def text_client(config, budget, *, structured=False):
 
 def whisper_factory(config):
     """Reuse the pinned runtime's bounded-audio transcription adapter."""
-    from video_os.core.dispatch import ProviderRole
-    from video_os.providers.client import ProviderSpec, WhisperTranscriptionAdapter
+    from flat.core.dispatch import ProviderRole
+    from flat.providers.client import ProviderSpec, WhisperTranscriptionAdapter
     if set(config) - {"spec", "key", "language"} or not {"spec", "key"} <= set(config):
         raise ValueError("ASR configuration requires spec, key, and optional language")
     allowed = {"model", "base_url", "timeout_seconds", "retries"}
@@ -92,10 +92,10 @@ class TextRoleClient:
         self.adapter = adapter
 
     def call(self, prompt, payload, schema, name):
-        from video_os.core.context import ConservativeTokenCounter
-        from video_os.core.dispatch import Mode, ProviderRole, RequestEnvelope, sanitize_gpt_text_payload
-        from video_os.core.errors import ProviderResponseError
-        from video_os.providers.client import parse_provider_json_object
+        from flat.core.context import ConservativeTokenCounter
+        from flat.core.dispatch import Mode, ProviderRole, RequestEnvelope, sanitize_gpt_text_payload
+        from flat.core.errors import ProviderResponseError
+        from flat.providers.client import parse_provider_json_object
         safe = sanitize_gpt_text_payload(payload)
         request = RequestEnvelope(role=ProviderRole.GPT_TEXT, mode=Mode.THINK,
             control_prompt=prompt, payload=safe,
@@ -122,7 +122,7 @@ class TextRoleClient:
 
 
 def load_split(path, media_root, role):
-    from run_eval import validate_input_manifest
+    from flat.evaluation import validate_input_manifest
     raw = read_object(path)
     if raw.get("selection_split") not in (None, role):
         raise ValueError(f"manifest split differs from requested {role}")
@@ -166,16 +166,17 @@ def source_identity(repo):
 
 
 def activate_runtime(reference):
-    """Bind to one explicit, committed Video OS dependency. Never search versions."""
+    """Bind to one explicit, committed Flat dependency. Never search versions."""
     if not isinstance(reference, dict) or set(reference) != {"root", "commit"}:
         raise ValueError("runtime requires exactly root and commit")
     root = Path(reference["root"]).expanduser().resolve(strict=True)
     commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     if commit != reference["commit"]:
-        raise ValueError("Video OS runtime commit differs from configured pin")
-    if str(root) not in sys.path:
-        sys.path.append(str(root))
-    for name in ("video_os", "observer_harness", "run_eval"):
+        raise ValueError("Flat runtime commit differs from configured pin")
+    package_root = root / "src"
+    if str(package_root) not in sys.path:
+        sys.path.append(str(package_root))
+    for name in ('flat', 'flat.observer', 'flat.evaluation'):
         spec = importlib.util.find_spec(name)
         if spec is None or not spec.origin or not Path(spec.origin).resolve().is_relative_to(root):
             raise ValueError(f"{name} import does not come from the pinned runtime")
@@ -184,7 +185,7 @@ def activate_runtime(reference):
 
 def lane_clients(models, observer_url, budget):
     """Pair ordered endpoint pools, broadcasting a shared provider to each lane."""
-    from video_os.providers.scheduler import normalize_endpoint_urls
+    from flat.providers.scheduler import normalize_endpoint_urls
     planners = normalize_endpoint_urls(models["planner"]["spec"]["base_url"])
     observers = normalize_endpoint_urls(observer_url)
     count = max(len(planners), len(observers))
@@ -217,7 +218,7 @@ def prepare(config_path, repo):
     diagnosis_workers = config.get("diagnosis_workers", 8)
     positive_int(diagnosis_workers, "diagnosis_workers")
     runtime_root = activate_runtime(config["runtime"])
-    from video_os.core.budget import BudgetContract
+    from flat.core.budget import BudgetContract
     initial = Harness.from_dict(config.get("initial", {}))
     # Runtime controls may be adjusted consistently across stacks, while all
     # adaptations must begin with the common two-tool, single-Omni H0.
@@ -265,7 +266,7 @@ def prepare(config_path, repo):
     if {s["media_sha256"] for s in left["samples"]} & {s["media_sha256"] for s in right["samples"]}:
         raise ValueError("identical video content occurs in both splits")
     source = source_identity(repo)
-    runtime = _snapshot(runtime_root, ("video_os", "observer_harness", "schemas", "prompts"), ("run_eval.py", "AGENTS.md"))
+    runtime = _snapshot(runtime_root, ("src/flat",), ("pyproject.toml", "AGENTS.md", "README.md"))
     identity = {"implementation": "moha", "config": config, "source": source, "runtime": runtime,
                 "input_hashes": {"calibration": digest(left), "validation": digest(right)}}
     ids = [k for k, item in catalog().items()
@@ -280,7 +281,7 @@ def prepare(config_path, repo):
 
 
 def build(prepared, store):
-    from video_os.providers.core import AssetCatalog, PERCEPTION_PROTOCOL
+    from flat.providers.core import AssetCatalog, PERCEPTION_PROTOCOL
     from .observer import ObserverService
     config, observer = prepared["config"], prepared["config"]["observer"]
     image, asr = config.get("image"), config.get("asr")

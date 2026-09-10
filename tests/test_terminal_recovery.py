@@ -101,7 +101,7 @@ class TerminalRecoveryTests(unittest.TestCase):
             def call(self, **kwargs):
                 raise AssertionError("intermediate repair must use the planner budget")
         planner = Planner([{"role": "assistant", "content": "Still considering."}, copy.deepcopy(FINAL)])
-        with patch("run_eval._llm_extract_evaluation_answer", wraps=__import__("run_eval")._llm_extract_evaluation_answer) as extract:
+        with patch('flat.evaluation._llm_extract_evaluation_answer', wraps=__import__('flat.evaluation', fromlist=['*'])._llm_extract_evaluation_answer) as extract:
             result = EpisodeRunner(Service(), planner, extractor=Evaluator()).run(Harness(max_steps=2), sample("cal"), 0)
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
         self.assertEqual(extract.call_args.kwargs["extractor"], None)
@@ -110,10 +110,10 @@ class TerminalRecoveryTests(unittest.TestCase):
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Video OS")
 class RecoveryWireTests(unittest.TestCase):
     def test_length_truncation_does_not_promote_an_intermediate_answer_cue(self):
-        from video_os.agent.planner import OpenAICompatiblePlannerClient
-        from video_os.core.budget import BudgetContract
-        from video_os.core.dispatch import ProviderRole
-        from video_os.providers.client import ProviderSpec, TransportResponse
+        from flat.agent.planner import OpenAICompatiblePlannerClient
+        from flat.core.budget import BudgetContract
+        from flat.core.dispatch import ProviderRole
+        from flat.providers.client import ProviderSpec, TransportResponse
 
         class Transport:
             def __init__(self):

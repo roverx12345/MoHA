@@ -10,7 +10,7 @@ from moha.demo import sample
 from moha.store import RunStore
 
 try:
-    from video_os.core.budget import BudgetContract
+    from flat.core.budget import BudgetContract
 except ImportError:
     BudgetContract = None
 

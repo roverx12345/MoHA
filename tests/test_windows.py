@@ -22,7 +22,7 @@ def observe(start, end, goal=None):
 class WindowTests(unittest.TestCase):
     def registry(self, service=None):
         from moha.tools import WindowPlayerRegistry
-        from video_os.agent.harness import VideoToolRegistry
+        from flat.agent.harness import VideoToolRegistry
         service = service or Service()
         started = service.begin_episode("unit")
         return WindowPlayerRegistry(VideoToolRegistry(service, started["session_id"]),
@@ -129,7 +129,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(receipt["requested_execution"]["frames"], 128)
 
     def test_failed_observer_records_the_selected_window_without_a_candidate(self):
-        from video_os.core.errors import ProviderError
+        from flat.core.errors import ProviderError
         class Broken(Service):
             def inspect_window(self, *args, **kwargs):
                 raise ProviderError("offline provider failure")

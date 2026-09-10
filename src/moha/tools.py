@@ -1,8 +1,8 @@
 """Planner-selected time windows over the pinned Video OS observer execution."""
 from __future__ import annotations
 import math
-from video_os.agent.player import VideoPlayerRegistry, PlayerProtocolError
-from video_os.agent.observer_registry import ObserverGoal
+from flat.agent.player import VideoPlayerRegistry, PlayerProtocolError
+from flat.agent.observer_registry import ObserverGoal
 from .models import Harness
 from .observer import PolicyExecution, PolicyObserverRegistry
 

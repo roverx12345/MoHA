@@ -14,7 +14,7 @@ from moha.models import Harness
 from moha.runtime import EpisodeRunner
 
 
-VIDEO_OS_AVAILABLE = importlib.util.find_spec("video_os") is not None
+VIDEO_OS_AVAILABLE = importlib.util.find_spec('flat') is not None
 
 
 class Service:
@@ -58,7 +58,7 @@ class Planner:
     def __init__(self, messages):
         self.messages, self.calls = messages, []
     def call(self, **kwargs):
-        from video_os.agent.harness import PlannerResponse
+        from flat.agent.harness import PlannerResponse
         self.calls.append(copy.deepcopy(kwargs))
         message = self.messages.pop(0)
         if isinstance(message, Exception):
@@ -127,7 +127,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_cleanup_runs_before_bounded_history_selection(self):
         from moha.context import planner_messages
-        from video_os.agent.harness import _planner_history_messages
+        from flat.agent.harness import _planner_history_messages
         from test_context import envelope, message
         original = [{"role": "system", "content": "s"}, {"role": "user", "content": "q"}]
         for i in range(5):
@@ -231,7 +231,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(list(store.root.glob("attempts/*/result.json")))
 
     def test_observer_outage_cannot_enter_promotion_as_wrong_answer(self):
-        from video_os.core.errors import ProviderError
+        from flat.core.errors import ProviderError
         class Broken(Service):
             def inspect_window(self, *args, **kwargs):
                 raise ProviderError("offline outage")
@@ -272,10 +272,10 @@ class RuntimeTests(unittest.TestCase):
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "run these integration tests in the Video OS environment")
 class WireTests(unittest.TestCase):
     def test_gpt_and_qwen_keep_the_same_post_contract_for_terminal_json(self):
-        from video_os.agent.planner import OpenAICompatiblePlannerClient
-        from video_os.core.budget import BudgetContract
-        from video_os.core.dispatch import ProviderRole
-        from video_os.providers.client import ProviderSpec, TransportResponse
+        from flat.agent.planner import OpenAICompatiblePlannerClient
+        from flat.core.budget import BudgetContract
+        from flat.core.dispatch import ProviderRole
+        from flat.providers.client import ProviderSpec, TransportResponse
 
         class Transport:
             def __init__(self):
@@ -311,10 +311,10 @@ class WireTests(unittest.TestCase):
         self.assertEqual(wires[0], wires[1])
 
     def test_reserved_final_call_disables_tools_on_actual_provider_wire(self):
-        from video_os.agent.planner import OpenAICompatiblePlannerClient
-        from video_os.core.budget import BudgetContract
-        from video_os.core.dispatch import ProviderRole
-        from video_os.providers.client import ProviderSpec, TransportResponse
+        from flat.agent.planner import OpenAICompatiblePlannerClient
+        from flat.core.budget import BudgetContract
+        from flat.core.dispatch import ProviderRole
+        from flat.providers.client import ProviderSpec, TransportResponse
         class Transport:
             def __init__(self):
                 self.calls, self.responses = [], script()
@@ -337,7 +337,7 @@ class WireTests(unittest.TestCase):
         self.assertIn("memory_ledger", transport.calls[-1]["messages"][-1]["content"])
 
     def test_text_boundary_keeps_video_metadata_in_actual_user_message(self):
-        from video_os.core.dispatch import sanitize_gpt_text_payload
+        from flat.core.dispatch import sanitize_gpt_text_payload
         from moha.evidence import messages_view, pack, unpack
         content = json.dumps({"initial": {"media": {"duration_seconds": 132.655599,
                              "has_audio": True}}, "task": {"question": "What happens last?"}})
@@ -349,9 +349,9 @@ class WireTests(unittest.TestCase):
         self.assertNotIn("artifact_id", sent["tool_result"])
 
     def test_schema_reaches_real_adapter_wire_and_invalid_field_can_repair(self):
-        from video_os.core.budget import BudgetContract
-        from video_os.core.dispatch import ProviderRole
-        from video_os.providers.client import OpenAICompatibleAdapter, ProviderSpec, TransportResponse
+        from flat.core.budget import BudgetContract
+        from flat.core.dispatch import ProviderRole
+        from flat.providers.client import OpenAICompatibleAdapter, ProviderSpec, TransportResponse
         from moha.bridge import TextRoleClient
         from moha.roles import Judge
         from test_roles import diagnosis, payload
@@ -480,7 +480,7 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(runner.service.asr_perception_model, "whisper-large-v3-turbo")
                 self.assertEqual(runner.service.ocr_perception_model, "Qwen/Qwen3.5-4B")
                 self.assertEqual(runner.service.image_base_url, "https://api2.aigcbest.top/v1")
-                from video_os.core.schema import SchemaRegistry
+                from flat.core.schema import SchemaRegistry
                 adapter = runner.service.whisper_backend_factory(self.root, SchemaRegistry(), prepared["budget"])
                 self.assertIsNone(adapter.default_language)
                 self.assertEqual(adapter.endpoint(), "http://127.0.0.1:8093/v1/audio/transcriptions")

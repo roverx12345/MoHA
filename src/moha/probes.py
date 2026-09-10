@@ -46,7 +46,7 @@ class ProbeRunner:
         return self.service.plan_observer_execution(session, tuple(original["window"]), execution.policy)
 
     def observe(self, sample, original, execution, candidate_id="baseline"):
-        from video_os.agent.observer_registry import ObserverHarnessConfig, ObserverGoal
+        from flat.agent.observer_registry import ObserverHarnessConfig, ObserverGoal
         from .observer import ObserverOutputError, PolicyObserverRegistry
         run_id = uuid.uuid4().hex
         session = self.service.begin_episode(sample.asset_id)["session_id"]
@@ -90,7 +90,7 @@ class ObserverResolver:
             return {"status": "inconclusive", "reason": "no cited successful generalist receipt"}
         from dataclasses import replace
         from .observer import PolicyExecution
-        from video_os.core.errors import BudgetExceeded
+        from flat.core.errors import BudgetExceeded
         # One cited request, one control, and at most six unique alternatives:
         # the complete rate-policy neighbourhood (2 rates + 2 scales + 2 modes).
         original = valid[0]

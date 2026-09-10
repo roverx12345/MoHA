@@ -12,9 +12,9 @@ def media(width=640, height=360, fps=24):
 
 
 def renderer(**limits):
-    from video_os.media.renderer import ViewportRenderer, RendererConfig
-    from video_os.media.sensory import Qwen3OmniMediaTokenProfile, AdaptivePackingPolicy
-    from video_os.providers.core import default_perception_budget
+    from flat.media.renderer import ViewportRenderer, RendererConfig
+    from flat.media.sensory import Qwen3OmniMediaTokenProfile, AdaptivePackingPolicy
+    from flat.providers.core import default_perception_budget
     result = ViewportRenderer.__new__(ViewportRenderer)
     result.budget = replace(default_perception_budget(), **{"f_view":128, "p_view":262144,
         "p_call":33554432, "b_video":16384, "c_sensor_max":None, **limits})
@@ -107,7 +107,7 @@ class AllocationTests(unittest.TestCase):
         self.assertTrue(all(a>=b for a,b in zip(plan["resolution"],plan["minimum_resolution"])))
 
     def test_unfit_minimum_does_not_overrun_budget(self):
-        from video_os.core.errors import BudgetExceeded
+        from flat.core.errors import BudgetExceeded
         with self.assertRaises(BudgetExceeded):
             allocate(renderer(b_video=1),media(),(0,10),ExecutionPolicy(frames=128))
 

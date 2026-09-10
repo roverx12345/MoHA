@@ -80,7 +80,10 @@
     "timeout_seconds": 600,
     "retries": 0
   },
-  "specialists": ["ocr", "asr"],
+  "specialists": [
+    "ocr",
+    "asr"
+  ],
   "image": {
     "spec": {
       "model": "Qwen/Qwen3.5-4B",
@@ -90,7 +93,9 @@
       "max_completion_tokens": 3072,
       "enable_thinking": false
     },
-    "key": {"env": "MOHA_OCR_API_KEY"}
+    "key": {
+      "env": "MOHA_OCR_API_KEY"
+    }
   },
   "asr": {
     "spec": {
@@ -99,12 +104,14 @@
       "timeout_seconds": 300,
       "retries": 0
     },
-    "key": {"local": true},
+    "key": {
+      "local": true
+    },
     "language": null
   },
   "retrieval_extension": false,
   "runtime": {
-    "root": "/home/jianghan/video_os_runs/moha_gpt55_216_boundaryfix_20260905_164146/source",
-    "commit": "9aad050bcf26a03494ff67730f3597ba22c45794"
+    "root": "/home/jianghan/MoHA/flat",
+    "commit": "9d912e6809784761737ab70d6cad1dfd7ef0c930"
   }
 }

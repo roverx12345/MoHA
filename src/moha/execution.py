@@ -61,7 +61,7 @@ def allocate(renderer, media, window, policy):
     ladder. All priorities share that feasible set and the same hard budgets.
     Episode totals retain the pinned runtime's advisory accounting semantics.
     """
-    from video_os.core.errors import BudgetExceeded
+    from flat.core.errors import BudgetExceeded
     start, end = window
     if not 0 <= start < end <= media.duration_seconds:
         raise ValueError("invalid fixed observation window")

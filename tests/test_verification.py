@@ -67,7 +67,7 @@ class NativeVerificationTests(unittest.TestCase):
             {"role": "assistant", "content": text},
             {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]
         planner = Planner(messages)
-        with patch("video_os.agent.evidence.EvidenceLedger.from_task", side_effect=AssertionError("old rules must be unused")):
+        with patch('flat.agent.evidence.EvidenceLedger.from_task', side_effect=AssertionError("old rules must be unused")):
             result = EpisodeRunner(Service(), planner).run(Harness(memory=True, verification=True, max_steps=5), sample("cal"), 0)
         self.assertEqual(result.status, "completed", result.raw)
         self.assertEqual(result.usage["model_calls"], 5)
@@ -119,7 +119,7 @@ class NativeVerificationTests(unittest.TestCase):
             self.assertEqual("Evidence 0" in str(fresh), enabled)
 
     def test_diagnosis_provider_failure_is_not_silently_retried(self):
-        from video_os.core.errors import ProviderError
+        from flat.core.errors import ProviderError
         planner = Planner([call("verify_fresh", {}), ProviderError("offline failure")])
         result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
         self.assertEqual(result.status, "error")
@@ -130,10 +130,10 @@ class NativeVerificationTests(unittest.TestCase):
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Video OS")
 class VerificationWireTests(unittest.TestCase):
     def test_diagnosis_wire_is_two_text_messages_without_output_schema(self):
-        from video_os.agent.planner import OpenAICompatiblePlannerClient
-        from video_os.core.budget import BudgetContract
-        from video_os.core.dispatch import ProviderRole
-        from video_os.providers.client import ProviderSpec, TransportResponse
+        from flat.agent.planner import OpenAICompatiblePlannerClient
+        from flat.core.budget import BudgetContract
+        from flat.core.dispatch import ProviderRole
+        from flat.providers.client import ProviderSpec, TransportResponse
         class Transport:
             def __init__(self):
                 self.calls = []

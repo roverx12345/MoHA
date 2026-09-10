@@ -4,13 +4,13 @@
   implementation under `src/moha`, tests under `tests`, and one README.
 - Use Git history for previous code. Do not add backup copies, dated source
   directories, alternate-version scripts, or experiment outputs in this tree.
-- Video OS is an external, read-only runtime dependency, selected explicitly by
+- Flat is an external, read-only runtime dependency, selected explicitly by
   `config.runtime.root` and its exact `commit`. Do not discover versions by name,
   fall back to the parent directory, or duplicate its tools/model adapters here.
 - Preserve the paper's shared H0, catalog-constrained single-coordinate proposals,
   calibration/validation separation, fixed-support observer probes, and validation
   gate. Diagnoses are hypotheses, not fixed intervention-routing rules.
-- Keep two Video OS tools, plus module tools only when enabled: memory_read /
+- Keep two Flat tools, plus module tools only when enabled: memory_read /
   memory_note for memory and verify_fresh for verification. The user authorized
   these native module tools in place of the separate MCP experiment.
   `observe(start_seconds, end_seconds, goal)` selects
@@ -77,7 +77,7 @@
   Keep probe services/verdict clients serial within the original episode lane;
   restore manifest order before the coordinator freezes votes and checks health.
   Cache each successful diagnosis and stop new submissions on unexpected errors.
-- Verify with `PYTHONPATH=src:<runtime-root> python -m unittest discover -s tests -v`.
+- Verify with `PYTHONPATH=src:<runtime-root>/src python -m unittest discover -s tests -v`.
   Also run the pinned runtime's full test suite when integration changes warrant it.
 
 - Source-relative observer execution lives in `execution.py`: target sampling rate

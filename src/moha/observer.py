@@ -2,10 +2,10 @@
 from __future__ import annotations
 import copy
 from dataclasses import replace, dataclass, field
-from video_os.agent.observer_registry import FixedObserverExecution, ObserverRegistry
+from flat.agent.observer_registry import FixedObserverExecution, ObserverRegistry
 from .execution import ExecutionPolicy, EXECUTION_POLICY, allocate
-from video_os.core.errors import ProviderResponseError
-from video_os.providers.core import (VideoOSPerceptionService, _default_compact_modalities,
+from flat.core.errors import ProviderResponseError
+from flat.providers.core import (VideoOSPerceptionService, _default_compact_modalities,
     _normalize_compact_observation, map_view_relative_times_to_source)
 
 

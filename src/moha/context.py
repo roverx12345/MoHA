@@ -98,7 +98,7 @@ def planner_messages(messages):
 
 def bounded_history(messages, *, token_limit, max_turns):
     """Reuse the pinned history cap with a notice that preserves evidence conflicts."""
-    from video_os.agent.harness import _planner_history_messages
+    from flat.agent.harness import _planner_history_messages
     projected = planner_messages(messages)
     bounded, audit = _planner_history_messages(projected, token_limit=token_limit, max_turns=max_turns)
     if audit["history_compacted"] and isinstance(projected[1].get("content"), str):
