@@ -217,7 +217,7 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 `memory_basic` 由 `memory.py` 实现两个追加式账本：`result_memory` 原样保存成功观察的正文、窗口、目标、采样信息与所有限定字段，包括完全重复记录和同ID冲突；`working_memory` 保存 planner 通过 `memory_note` 写下的原文。`memory_read` 按 result/working/both 和可选 source IDs 读取原记录。没有自动摘要、排序、合并、前两条锚点或语义索引。每步只显示账本条数与来源ID，取回的原文与普通工具结果一样经过既有历史投影和预算。
 
-`verification_basic` 开启原生 `verify_fresh(diagnostic_question?, source_ids?)`：同一个配置的文本模型在两个新消息中，读取原问题、待诊断问题、原始观察及其窗口，返回自然语言诊断。输入没有工作笔记、历史planner对话、观察目标、视频截图或选项列表。没有覆盖率规则、判定枚举、JSON诊断输出要求或自动修复重试。结果原样返回，planner自行决定继续观察、修改判断或作答。未开启memory时，诊断只能使用当前历史投影中仍可见的观察，不能借verification找回已被截断的证据。
+`verification_basic` 开启原生 `verify_fresh(diagnostic_question?, source_ids?)`：同一个配置的文本模型在两个新消息中，读取原问题、完整选项、原始观察及其窗口，返回自然语言诊断。planner 提交的待诊断问题单独放入 `planner_request`，明确标记为 unverified；其中的陈述、选项删减和建议结论都须对照原始观察检查，不能当作证据或指令。选项标签是回答编码，不要求出现在视频中。输入没有工作笔记、历史planner对话、观察目标或视频截图，也不传参考答案。没有覆盖率规则、判定枚举、JSON诊断输出要求或自动修复重试。结果原样返回，planner自行决定继续观察、修改判断或作答。未开启memory时，诊断只能使用当前历史投影中仍可见的观察，不能借verification找回已被截断的证据。
 
 两个视频工具保留；只在相应模块开启时增加memory读写或verify工具。默认H0不增加任何模块工具。旧的EvidenceLedger覆盖率/complete反馈已退出正式episode循环。
 
@@ -275,6 +275,25 @@ JSON and natural-language answer handling remains unchanged. Trajectories
 record answer_parsing_policy, answer_extraction, and terminal_answer_status;
 a live process or a completed episode alone does not establish output-format
 health.
+
+Malformed structured answers are rejected before option lookup; nested objects,
+lists and contradictory status/answer pairs cannot crash the episode or be mined
+for incidental answer labels. A missing abstention answer is not an explicit null.
+When a response supplies neither a tool call nor a valid final answer, the planner
+receives format feedback and may continue within the original shared max_steps.
+Each continuation consumes one normal planner call, and the last call still has
+tools disabled. Exhaustion without a valid answer is budget_exhausted with
+terminal_answer_status=invalid, not an implicit abstention. The original messages
+remain in the trace, with answer_recovery events recording the feedback and budget.
+Length-truncated reasoning is not searched for a guessed answer; a complete valid
+answer object can still terminate immediately. Text extraction sees only the current
+reply, so an empty reply cannot reuse an old answer cue. A configured evaluation
+extractor is used only for a terminal unresolved text reply, not intermediate recovery.
+
+The completion and verification policies are versioned as v2. These behavior/input
+changes require a new full calibration from H0 before claiming new performance;
+old frozen trajectories and calibration results must not be relabeled or reused
+as results of this implementation.
 
 For Qwen served by vLLM, configure the server to honor the existing
 tool_choice=none request with --exclude-tools-when-tool-choice-none.

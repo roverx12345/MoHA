@@ -10,7 +10,7 @@ from .verification import VERIFICATION_POLICY, diagnosis_messages, verification_
 from .answers import ANSWER_PARSING_POLICY, terminal_json_answer
 
 
-PLANNER_COMPLETION_POLICY = "moha_shared_diagnosis_budget_v1"
+PLANNER_COMPLETION_POLICY = "moha_shared_diagnosis_budget_v2"
 
 
 PLANNER_PROMPT = """Answer the video question using the supplied Video OS tools.
@@ -161,25 +161,51 @@ class EpisodeRunner:
                 messages.append(message)
                 emit(kind="planner", step=step, message=message, metadata=dict(response.metadata))
                 if not response.tool_calls:
-                    raw["status"] = "completed"
-                    raw["state"]["final_answer"] = response.final_answer
-                    raw["final_answer"] = response.final_answer
-                    final = response.final_answer or {}
-                    if final.get("status") == "abstained" and final.get("answer") is None:
+                    final = response.final_answer if isinstance(response.final_answer, dict) else {}
+                    label = final.get("answer")
+                    truncated = response.metadata.get("finish_reason") == "length"
+                    if final.get("status") == "abstained" and "answer" in final and label is None:
                         answer, extraction = {"status": "abstained", "answer": None}, {"method": "structured"}
-                    elif final.get("answer") in sample.task["options"]:
-                        answer, extraction = {"status": "answered", "answer": final["answer"]}, {"method": "structured"}
+                    elif (isinstance(label, str) and label in sample.task["options"]
+                          and final.get("status", "answered") == "answered"):
+                        answer, extraction = {"status": "answered", "answer": label}, {"method": "structured"}
                     else:
                         recovered = terminal_json_answer(message.get("content"), sample.task["options"])
                         if recovered is not None:
                             answer, extraction = recovered, {"method": "terminal_json", "attempted": False,
                                                              "policy": ANSWER_PARSING_POLICY}
+                        elif final or truncated:
+                            # Do not mine an invalid object or unfinished reasoning
+                            # for an incidental label, including nested answer fields.
+                            answer = {"status": "invalid", "answer": None}
+                            extraction = {"method": "invalid_structured" if final else "truncated",
+                                          "attempted": False}
                         else:
-                            answer, extraction = _llm_extract_evaluation_answer(raw, extractor=self.extractor)
+                            # Only this response may supply an answer. An empty reply
+                            # must not resurrect a guess from an earlier tool turn.
+                            current = {"messages": [message], "state": {"task": sample.task}, "status": "running"}
+                            answer, extraction = _llm_extract_evaluation_answer(
+                                current, extractor=self.extractor if final_call else None)
+                    if answer.get("status") == "invalid" and not final_call:
+                        reason = "length_truncated" if truncated else "invalid_final_answer"
+                        feedback = {"planner_output_feedback": {
+                            "reason": reason,
+                            "message": "The last response did not supply a valid final answer. "
+                                       "Use the remaining calls to continue with tools if needed, or return "
+                                       "a concise JSON object with status 'answered' and answer equal to "
+                                       "one option label, or status 'abstained' and answer null. "
+                                       "Do not repeat the unfinished explanation.",
+                            "remaining_model_calls": harness.max_steps - used_calls}}
+                        emit(kind="answer_recovery", step=step, reason=reason, extraction=extraction,
+                             feedback=feedback, remaining_model_calls=harness.max_steps - used_calls)
+                        messages.append({"role": "user", "content": canonical(feedback)})
+                        continue
+                    raw["state"]["final_answer"] = response.final_answer
+                    raw["final_answer"] = response.final_answer
                     raw["answer"], raw["answer_extraction"] = answer.get("answer"), extraction
                     raw["terminal_answer_status"] = answer.get("status")
-                    if answer.get("status") == "abstained":
-                        raw["status"] = "abstained"
+                    raw["status"] = {"answered": "completed", "abstained": "abstained"}.get(
+                        answer.get("status"), "budget_exhausted")
                     emit(kind="terminal", step=step, message=message, answer=answer)
                     break
                 if final_call:
