@@ -108,4 +108,9 @@ def visible_observations(messages):
                 walk(value)
             elif isinstance(value, dict):
                 walk(value.get("evidence_memory", []))
+                # Finalization repeats exactly the original evidence supplied to
+                # the single audit, including only visible records without memory.
+                finalization = value.get("finalization")
+                if isinstance(finalization, dict):
+                    walk(finalization.get("observations", []))
     return list(found.values())

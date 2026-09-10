@@ -2,6 +2,7 @@
 from __future__ import annotations
 import copy
 from .context import tool_context
+from .models import digest
 
 MEMORY_POLICY = "moha_two_ledgers_v1"
 
@@ -50,8 +51,12 @@ class ObservationMemory:
         self.working_memory.append(note)
         return copy.deepcopy(note)
 
+    def versions(self):
+        return {"result_memory_version": digest(self.result_memory),
+                "working_memory_version": digest(self.working_memory)}
+
     def inventory(self):
-        return {"result_records": len(self.result_memory), "working_notes": len(self.working_memory),
+        return {**self.versions(), "result_records": len(self.result_memory), "working_notes": len(self.working_memory),
                 "source_ids": list(dict.fromkeys(r["observation"].get("observation_id")
                                     for r in self.result_memory if r["observation"].get("observation_id")))}
 
@@ -61,7 +66,7 @@ def memory_tools():
                   "description": "Optional observation IDs. Omit to read all sources."}
     return [
         {"type": "function", "function": {"name": "memory_read",
-         "description": "Read original result observations or your working notes verbatim, including older observations omitted from conversation history.",
+         "description": "Read original result observations or your working notes, including older observations omitted from history. Unchanged content already read and still visible returns no_novelty without repeating the ledger. Repeated redundant reads temporarily disable this tool; continue with a useful action or submit your answer.",
          "parameters": {"type": "object", "properties": {
              "ledger": {"type": "string", "enum": ["result", "working", "both"]},
              "source_ids": source_ids}, "additionalProperties": False}}},

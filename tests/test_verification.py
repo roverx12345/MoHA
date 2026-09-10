@@ -8,6 +8,7 @@ from moha.verification import diagnosis_messages
 from moha.demo import sample
 from test_memory import observation
 from test_runtime import Service, Planner, call, VIDEO_OS_AVAILABLE
+from test_verification_gate import audit as audit_response
 
 
 class DiagnosisInputTests(unittest.TestCase):
@@ -48,7 +49,7 @@ class DiagnosisInputTests(unittest.TestCase):
         self.assertEqual(records, original)
         self.assertNotIn("PRIVATE_ANSWER_SENTINEL", str(messages))
         self.assertIn("not evidence", messages[0]["content"])
-        self.assertIn("Check its premises", messages[0]["content"])
+        self.assertIn("Check their premises", messages[0]["content"])
         default = json.loads(diagnosis_messages(task, records)[1]["content"])
         self.assertIsNone(default["planner_request"])
         self.assertEqual(default["video_question"], task["question"])
@@ -58,7 +59,7 @@ class DiagnosisInputTests(unittest.TestCase):
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Video OS")
 class NativeVerificationTests(unittest.TestCase):
     def test_observe_note_diagnose_final_uses_shared_budget_and_returns_raw_text(self):
-        text = "Free diagnosis.\nEvidence remains ambiguous; no imposed verdict."
+        text = audit_response()["content"]
         messages = [call("video_player_observe", {"start_seconds": 10, "end_seconds": 20,
             "goal": {"type": "general", "target": "GOAL_SENTINEL"}}),
             call("memory_note", {"text": "WORKING_SENTINEL"}),
@@ -84,17 +85,17 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(planner.calls[-1]["tool_choice"], "none")
         self.assertNotIn("evidence_ledger", result.raw)
 
-    def test_verifier_cannot_spend_reserved_final_call(self):
+    def test_budget_floor_audit_preserves_reserved_final_call(self):
         planner = Planner([call("video_player_observe", {"start_seconds": 10, "end_seconds": 20,
-            "goal": {"type": "general", "target": "action"}}), call("verify_fresh", {}),
+            "goal": {"type": "general", "target": "action"}}), audit_response(),
             {"role": "assistant", "content": '{"status":"abstained","answer":null}'}])
         result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
         self.assertEqual(result.status, "abstained", result.raw)
         self.assertEqual(result.usage["model_calls"], 3)
-        self.assertEqual(result.usage["verification_calls"], 0)
+        self.assertEqual(result.usage["verification_calls"], 1)
         self.assertEqual(planner.calls[-1]["tool_choice"], "none")
-        event = next(e for e in result.events if e["kind"] == "tool_result" and e["tool"] == "verify_fresh")
-        self.assertTrue(event["result"]["isError"])
+        self.assertEqual(result.raw["verification_gate"]["trigger"], "budget_floor")
+        self.assertEqual(planner.calls[-1]["tools"], [])
 
     def test_verification_without_memory_cannot_recover_evicted_evidence(self):
         class Scoped(Service):
@@ -106,7 +107,7 @@ class NativeVerificationTests(unittest.TestCase):
                 return r
         messages = [call("video_player_observe", {"start_seconds": i, "end_seconds": i+5,
                     "goal": {"type": "general", "target": "action"}}, str(i)) for i in [0, 10]]
-        messages += [call("verify_fresh", {}), {"role": "assistant", "content": "A diagnosis."},
+        messages += [call("verify_fresh", {}), audit_response(),
                      {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]
         for enabled in [False, True]:
             planner = Planner(copy.deepcopy(messages))
@@ -137,7 +138,7 @@ class VerificationWireTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
                 self.responses = [call("verify_fresh", {}),
-                    {"role": "assistant", "content": "Plain free-form diagnosis; no source evidence."},
+                    audit_response(),
                     {"role": "assistant", "content": '{"status":"abstained","answer":null}'}]
             def post(self, **kwargs):
                 self.calls.append(json.loads(kwargs["body"]))
@@ -163,3 +164,5 @@ class VerificationWireTests(unittest.TestCase):
         self.assertEqual(payload["options"], sample("cal").task["options"])
         self.assertIsNone(payload["planner_request"])
         self.assertEqual(result.usage["verification_calls"], 1)
+        self.assertFalse(transport.calls[-1].get("tools"))
+        self.assertNotIn("tool_choice", transport.calls[-1])  # Pinned adapter omits it with an empty tool list.

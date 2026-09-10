@@ -95,7 +95,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual({x["function"]["name"] for x in planner.calls[0]["tools"]}, {"video_player_search", "video_player_observe"})
 
     def test_modules_and_execution_reach_existing_runtime(self):
-        service, planner = Service(), Planner(script())
+        from test_verification_gate import audit, final
+        service, planner = Service(), Planner(script() + [audit(), final()])
         harness = Harness.from_dict({"overview": True, "memory": True, "verification": True,
             "execution": {"default": {}, "general": {"frames": 64}}})
         result = EpisodeRunner(service, planner).run(harness, sample("cal"), 0)

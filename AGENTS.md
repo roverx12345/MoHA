@@ -34,11 +34,23 @@
   Keep original observations, duplicate records, conflicts, scope and caveats.
   Planner reads original records and writes notes explicitly; no summaries,
   ranking, automatic merging or fixed early/recent memory selection.
-- Verification is one fresh text-only prompt over original observations, without
-  working notes, prior planner dialogue, screenshots, rule-based coverage, verdict
-  schemas or repair loops. Without memory, do not restore history-evicted evidence.
-  Charge diagnosis requests to the shared max_steps model-call allowance and
-  preserve one final planner response; never force diagnosis or block an answer.
+- Verification is an answer-audit capability with one automatic pre-submit or
+  two-call budget-floor trigger, at most one audit including manual verify_fresh,
+  and exactly one final planner response afterward with all tools disabled.
+  Reserve those calls inside max_steps; do not add compute or corrective perception.
+  Audit full options, the candidate, original observations with caveats, and explicit
+  unverified planner hypotheses in a fresh text-only context. No working-note ledger,
+  prior dialogue, screenshots or reference answer. Focus IDs must not hide contrary
+  available evidence. Without memory, never restore history-evicted observations.
+  Request the support/assumptions/contradictions/best-option/diagnosis JSON audit;
+  validate once, retain invalid raw output explicitly, and never retry the audit.
+  The final planner may keep, revise or abstain; the audit cannot impose an answer.
+- Keep no-novelty control separate from memory storage and verification. Hash the
+  result and working ledgers independently. Repeated unchanged reads that remain
+  visible return no_novelty without a repeated ledger; two consecutive redundant
+  reads temporarily mask memory_read. A version change or loss of the original
+  payload from bounded context re-enables it. Preserve original ledgers and allow
+  explicit restoration after eviction; never map memory repetition to verification.
 - Commit coherent changes before real model calls. Both this checkout and the
   pinned runtime must be clean. Record source/runtime commits, input/config hashes,
   provider identities, command, environment, and output location for every run.

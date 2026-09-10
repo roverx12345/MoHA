@@ -42,6 +42,8 @@ class Harness:
         for name in ("overview", "memory", "verification", "retrieval_guard"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be boolean")
+        if self.verification and self.max_steps < 2:
+            raise ValueError("verification requires at least two shared model calls")
         pairs = []
         for goal, settings in self.execution:
             if goal not in GOALS or isinstance(settings, str):

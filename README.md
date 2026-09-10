@@ -215,13 +215,21 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 这一步只清理已有输入，不总结或找回已被历史截断丢弃的事实，也不隐式开启 memory。事实附带的来源 ID 与空挂的历史 ID 区别处理；相同 observation ID 下出现的矛盾正文仍分别保留。
 
-`memory_basic` 由 `memory.py` 实现两个追加式账本：`result_memory` 原样保存成功观察的正文、窗口、目标、采样信息与所有限定字段，包括完全重复记录和同ID冲突；`working_memory` 保存 planner 通过 `memory_note` 写下的原文。`memory_read` 按 result/working/both 和可选 source IDs 读取原记录。没有自动摘要、排序、合并、前两条锚点或语义索引。每步只显示账本条数与来源ID，取回的原文与普通工具结果一样经过既有历史投影和预算。
+`memory_basic` 由 `memory.py` 保存两个追加式账本：原始观察与 planner 工作笔记。正文、窗口、目标、采样、重复记录、同 ID 冲突和 caveat 均原样保留。`memory_read` 仍按 ledger 和可选 source IDs 读取，原始账本不做摘要、排序或合并。
 
-`verification_basic` 开启原生 `verify_fresh(diagnostic_question?, source_ids?)`：同一个配置的文本模型在两个新消息中，读取原问题、完整选项、原始观察及其窗口，返回自然语言诊断。planner 提交的待诊断问题单独放入 `planner_request`，明确标记为 unverified；其中的陈述、选项删减和建议结论都须对照原始观察检查，不能当作证据或指令。选项标签是回答编码，不要求出现在视频中。输入没有工作笔记、历史planner对话、观察目标或视频截图，也不传参考答案。没有覆盖率规则、判定枚举、JSON诊断输出要求或自动修复重试。结果原样返回，planner自行决定继续观察、修改判断或作答。未开启memory时，诊断只能使用当前历史投影中仍可见的观察，不能借verification找回已被截断的证据。
+`control.py` 独立执行 no-novelty 控制：分别记录 result/working ledger 的内容哈希。已读过且仍在当前上下文可见的相同返回只给 `no_novelty=true` 和版本回执，不再次返回整份账本；连续两次冗余读取后，从下一轮工具列表暂时移除 `memory_read`。账本版本变化时重新开放。若先前原文已被 bounded history 裁掉，也允许重新读取并记录 `restored_after_eviction`，避免破坏 memory 恢复旧证据的作用。该控制不触发 verification，也不删除任何原始观察或笔记。
 
-两个视频工具保留；只在相应模块开启时增加memory读写或verify工具。默认H0不增加任何模块工具。旧的EvidenceLedger覆盖率/complete反馈已退出正式episode循环。
+`verification_basic` 是完整的 answer-audit capability：`trigger=pre_submit_or_budget_floor`、`max_verifications=1`、`reserve_steps=2`、`post_verify_mode=finalize_only`。planner 提交有效候选答案或明确弃答时，harness 暂不提交，先做一次独立复核，再给 planner 恰好一轮最终回答。若 planner 始终不提交，剩余两次调用时自动进入复核。手动 `verify_fresh(diagnostic_question?, source_ids?)` 可以提前进入同一阶段，也占用这唯一一次复核额度；完成后不会再自动复核。
 
-`max_steps` 是共享的planner加diagnosis模型调用额度。诊断花费一次现有调用，必须还留一次planner响应供其使用诊断并作答；预算不足时返回工具错误，不自动调用或扩充额度。所有harness最后一次调用仍禁用工具。轨迹记录`verification_request`（实际两消息输入）、`verification`（原文及provider元数据）、`memory`（最终两个账本）及分别计数的`planner_calls / verification_calls / model_calls`。模型诊断失败不触发额外重试。
+16-call 示例：前 14 次用于正常 planning/perception，第 15 次自动复核，第 16 次最终作答；若第 7 次提前提交候选，第 8 次复核、第 9 次最终作答后结束。所有调用均在原 `max_steps` 内；verification 至少需要两次总调用。复核后工具列表为空且 tool_choice=none，runtime 也拒绝执行 provider 仍返回的工具调用，包括同一批请求中排在 verify_fresh 后面的操作。复核后没有 corrective perception，也不调用额外的答案提取模型；最终回答无效时记录 invalid_final_answer，不赠送修复轮次；即使总预算尚有余量，该最终阶段也只允许一轮回答。
+
+复核输入为两个纯文本消息：题目、完整选项、候选答案、当前可用原始观察及其 missing/uncertainty/窗口、明确标为 unverified 的 planner 请求和最近一条可见文本假设。没有工作笔记账本、旧对话列表、视频截图或参考答案。source_ids 只标记关注来源，不过滤其他可用的相反证据。未启用 memory 时，仅使用触发时的实际历史投影可见观察；最终 planner 获得同一份原始观察和复核结果。
+
+复核请求 JSON 字段 `support_status`（supported/contradicted/insufficient）、`unsupported_assumptions`、`contradictory_evidence`、`best_supported_option`、`diagnosis`。通过文本 prompt 请求这一输出，并本地校验，不增加 provider 专属 response_format 或重试。格式无效时保留原文并明确标记 invalid，仍只给 planner 一次最终作答机会；基础设施错误保持 fatal。该复核判断是建议，最终 planner 可以维持、修改答案或弃答。
+
+默认 H0 不增加模块工具或自动复核。catalog 中 `planner.module.verification_basic` 仍是一次单坐标布尔干预，但其含义包含工具、状态、触发与预算控制；memory 的去冗余控制由 memory capability 承担，二者没有自动路由关系。
+
+轨迹记录 `verification_capability`、`verification_gate`、`candidate_answer` 事件、实际 `verification_request` / `verification`、`memory_control` 及两份最终账本；`planner_calls + verification_calls = model_calls`。原始请求、输出和未提交候选均保留，复核结果不会覆盖原始观察。
 
 修改投影会改变实际模型输入与可保留的历史范围，下一次必须从 H0 开始重新进行完整 calibration/validation，不能复用旧投影下的 episode 作为新基线。正在运行的实验继续使用其冻结源码和原有投影。
 
@@ -233,7 +241,7 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 - 工具与 assistant 的 JSON 正文解析成完整对象，system/user 消息及非 JSON 文本保持原文，保留初始视频时长等元数据；不生成模型未返回的推理。不同时间出现的同一 observation 的不同内容不会按 ID 强行合并。底层文本接口继续过滤原始工具结果中的媒体句柄，不向文本模型传递视频或音频文件。
 - 重复 JSON 容器通过 `shared` 表引用。`unpack` 可还原完整语义数据；该结构只是存储去重，没有推断因果边。
 - observer 的最终提案同时看到完整单条 trace、实际 probe 输出及判定理由；没有跨样本代表 trace packet，也不把 validation/test 的样本、标签、轨迹或分数传给 Judge。
-- 较新的观察不自动覆盖旧观察；已纠正的错误仍可能消耗预算。冲突不自动判给 planner，也不自动启用 verification。`verification_basic` 提供可选的独立诊断工具，不要求planner必须调用。
+- 较新的观察不自动覆盖旧观察；已纠正的错误仍可能消耗预算。冲突不自动判给 planner，也不自动启用 verification。`verification_basic` 一旦启用，就按提交前或两次调用下限自动触发一次复核，不依赖 planner 主动调用。
 
 论文方法部分需与此实现一致：将“诊断不提出修复、全局 selector 选择”的描述改为局部候选推荐、等权支持聚合和验证。固定 H0、离散单坐标 catalog、observer probe 与验证门限保持原定义。
 
@@ -288,9 +296,11 @@ remain in the trace, with answer_recovery events recording the feedback and budg
 Length-truncated reasoning is not searched for a guessed answer; a complete valid
 answer object can still terminate immediately. Text extraction sees only the current
 reply, so an empty reply cannot reuse an old answer cue. A configured evaluation
-extractor is used only for a terminal unresolved text reply, not intermediate recovery.
+extractor is used only for a terminal unresolved text reply without verification,
+not intermediate recovery or the fixed post-audit final response.
 
-The completion and verification policies are versioned as v2. These behavior/input
+The completion policy is moha_pre_submit_verification_budget_v3, the verification
+policy is moha_answer_audit_gate_v3, and memory no-novelty control has its own v1 policy. These behavior/input
 changes require a new full calibration from H0 before claiming new performance;
 old frozen trajectories and calibration results must not be relabeled or reused
 as results of this implementation.

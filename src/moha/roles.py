@@ -66,7 +66,9 @@ never map a failure label mechanically to a module. Confidence describes the
 attribution only and is not a vote weight. Each trace has at most one equal vote.
 Use null for unresolved failures, insufficient evidence or no suitable intervention.
 Do not invent candidates or parameters. Only held-out validation can promote a
-candidate. verification_basic provides advisory context, not a required tool.
+candidate. verification_basic automatically audits once before commitment or at the two-call
+budget floor, then permits one final response. It cannot obtain new evidence. Repeated memory
+reads are handled separately by memory no-novelty control, never by a memory-to-verification rule.
 For an initial observer diagnosis use null: observer probes must precede its
 final recommendation. No validation or test samples are provided or requested."""
 
