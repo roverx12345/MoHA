@@ -277,6 +277,65 @@ class RuntimeTests(unittest.TestCase):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "run these integration tests in the Video OS environment")
 class WireTests(unittest.TestCase):
+    def test_module_instructions_match_enabled_tools_on_actual_provider_wire(self):
+        from flat.agent.planner import OpenAICompatiblePlannerClient
+        from flat.core.budget import BudgetContract
+        from flat.core.dispatch import ProviderRole
+        from flat.providers.client import ProviderSpec, TransportResponse
+        from test_verification_gate import audit, final
+
+        class Transport:
+            def __init__(self, verification):
+                self.calls = []
+                self.responses = script() + ([audit(), final()] if verification else [])
+
+            def post(self, **kwargs):
+                self.calls.append(json.loads(kwargs["body"]))
+                message = self.responses.pop(0)
+                body = {"id": "unit", "model": "unit", "choices": [{"message": message,
+                        "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
+                        "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}}
+                return TransportResponse(status=200, body=json.dumps(body).encode())
+
+        budget = BudgetContract(c_text_max=None, c_sensor_max=None, b_control=None, b_video=8192,
+            b_state=None, b_task=None, f_view=32, p_view=147456, p_call=1572864,
+            k_look=8, k_compare=2, f_episode=256, b_video_episode=65536)
+        for overview in (False, True):
+            for memory in (False, True):
+                for verification in (False, True):
+                    with self.subTest(overview=overview, memory=memory, verification=verification):
+                        transport = Transport(verification)
+                        planner = OpenAICompatiblePlannerClient(
+                            spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model="unit"),
+                            api_key="unit-key", budget=budget, transport=transport)
+                        result = EpisodeRunner(Service(), planner).run(
+                            Harness(overview=overview, memory=memory, verification=verification), sample("cal"), 0)
+                        self.assertEqual((result.status, result.answer), ("completed", "A"))
+                        first, last = transport.calls[0], transport.calls[-1]
+                        prompt = first["messages"][0]["content"]
+                        self.assertEqual(last["messages"][0]["content"], prompt)
+                        self.assertEqual("overview" in prompt.lower(), overview)
+                        self.assertEqual("memory" in prompt.lower(), memory)
+                        self.assertEqual("memory_read" in prompt, memory)
+                        self.assertEqual("working memory" in prompt, memory)
+                        self.assertEqual("no_novelty" in prompt, memory)
+                        self.assertEqual("verification" in prompt.lower(), verification)
+                        self.assertEqual("verify_fresh" in prompt, verification)
+                        self.assertEqual("after the audit" in prompt, verification)
+                        self.assertIn("final answer is an assistant message", prompt)
+                        expected_tools = {"search", "observe"}
+                        if memory:
+                            expected_tools.update({"memory_read", "memory_note"})
+                        if verification:
+                            expected_tools.add("verify_fresh")
+                        self.assertEqual({t["function"]["name"] for t in first["tools"]}, expected_tools)
+                        context = json.loads(first["messages"][-1]["content"])
+                        self.assertEqual("memory_ledger" in context, memory)
+                        self.assertEqual("memory_control" in context, memory)
+                        self.assertEqual("verification_gate" in context, verification)
+                        self.assertEqual(len(transport.calls), 5 if verification else 3)
+                        self.assertEqual(result.usage["verification_calls"], int(verification))
+
     def test_gpt_and_qwen_keep_the_same_post_contract_for_terminal_json(self):
         from flat.agent.planner import OpenAICompatiblePlannerClient
         from flat.core.budget import BudgetContract

@@ -93,6 +93,8 @@ PYTHONPATH=src python -m moha demo --output /tmp/moha-demo
 
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
+Planner 系统提示按当前 Harness 组装：H0 只包含 search/observe、证据使用和最终作答规则；overview、memory、verification 的说明分别只在对应模块开启时加入，与工具和状态的开关一致。关闭模块时不保留“如果启用”的说明。实际提示词保存在原始消息中，轨迹用 `planner_prompt_policy: moha_enabled_module_prompt_v1` 标记此规则。该提示词变化需要新建运行并从 H0 完整校准，不能复用旧提示词生成的 episode 作为新基线。
+
 Planner 用 `observe(start_seconds, end_seconds, instruction, evidence_type)` 直接选择源视频时间范围，并给 Observer 一条具体指令或问题。`instruction` 写明观察对象和需要报告的可见／可听事实，必要时要求时间、顺序和不确定性；`evidence_type` 保留现有证据类型和路由，`reference` 仅在 `relation` 时可选。Omni 实际请求也使用 `instruction`，通过 Flat 的专用观察提示执行；MoHA 审计回执保存同名指令与类型，固定支持探针读取这些字段，同时兼容旧记录。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
 
 ```json
