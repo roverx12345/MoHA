@@ -41,6 +41,28 @@ class Transport:
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires the pinned Video OS runtime")
 class ObserverTests(unittest.TestCase):
+    def test_instruction_reaches_real_wire_without_goal_or_player_envelopes(self):
+        instruction = "Describe the visible pattern changes with their times."
+        service, transport = self.service([response()])
+        planner = Planner([call("observe", {"start_seconds": 1, "end_seconds": 2.5,
+            "instruction": instruction, "evidence_type": "sequence"}), ANSWER])
+        episode = EpisodeRunner(service, planner).run(Harness(), sample("unit"), 0)
+        self.assertEqual(episode.status, "completed", episode.raw)
+        sent = transport.calls[0]
+        body = json.loads(next(p["text"] for p in sent["messages"][1]["content"] if p["type"] == "text"))
+        self.assertEqual(body["instruction"], instruction)
+        self.assertNotIn("inspection_goal", body)
+        self.assertNotIn("Video OS", sent["messages"][0]["content"])
+        self.assertNotIn("inspection goal", sent["messages"][0]["content"])
+        event = next(e for e in episode.events if e["kind"] == "tool_result")
+        self.assertEqual(event["result"]["observation"]["facts"][0]["support_time_seconds"], [1.2, 1.8])
+        actual_feedback = json.loads(planner.calls[-1]["messages"][-2]["content"])
+        self.assertEqual(event["result"], actual_feedback)
+        self.assertEqual(actual_feedback["observation_context"]["instruction"], instruction)
+        for key in ("player_state", "backend_result", "view", "budget", "observer_execution_receipt"):
+            self.assertNotIn(key, actual_feedback)
+        self.assertNotIn("goal", event["audit"]["observer_execution_receipt"])
+
     @classmethod
     def setUpClass(cls):
         cls.media_tmp = tempfile.TemporaryDirectory()

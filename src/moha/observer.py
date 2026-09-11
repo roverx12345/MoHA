@@ -4,15 +4,16 @@ import copy
 from dataclasses import replace, dataclass, field
 from flat.agent.observer_registry import FixedObserverExecution, ObserverRegistry
 from .execution import ExecutionPolicy, EXECUTION_POLICY, allocate
+from .records import observer_audit
 from flat.core.errors import ProviderResponseError
 from flat.providers.core import (VideoOSPerceptionService, _default_compact_modalities,
     _normalize_compact_observation, map_view_relative_times_to_source)
 
 
-OBSERVER_RECOVERY_POLICY = "moha_observer_one_repair_v1"
+OBSERVER_RECOVERY_POLICY = "moha_observer_instruction_one_repair_v2"
 REPAIR_PROMPT = """\nThe previous response was unusable. Re-inspect the SAME supplied media
-for the SAME evidence goal and return one complete JSON object matching the schema.
-Report goal-relevant events and changes. Merge a continuously unchanged action or
+for the SAME instruction and return one complete JSON object matching the schema.
+Report relevant events and changes. Merge a continuously unchanged action or
 state into one supported interval; do not emit identical descriptions for each
 sampled frame. Preserve genuinely separate repeated actions and conflicting evidence.
 Do not invent details to fill time slots. Keep facts concise and include the required
@@ -98,7 +99,7 @@ class ObserverService(VideoOSPerceptionService):
                     recovery = {"policy": OBSERVER_RECOVERY_POLICY, "status": "retrying",
                         "view_id": metadata.get("view_id"),
                         "model_time_range_seconds": metadata.get("time_range_seconds"),
-                        "inspection_goal": request.payload.get("inspection_goal"),
+                        "instruction": request.payload.get("instruction", request.payload.get("inspection_goal")),
                         "attempts": [{"call_id": call_id, "reason": reason}], "additional_calls": 0}
                     if not hasattr(session, "observer_output_recoveries"):
                         session.observer_output_recoveries = []
@@ -158,14 +159,16 @@ class PolicyExecution(FixedObserverExecution):
 
 class _PlannedBackend:
     """Per-call adapter; never mutate a shared service or its sampling defaults."""
-    def __init__(self, service, plan):
-        self.service, self.plan = service, plan
+    def __init__(self, service, plan, instruction):
+        self.service, self.plan, self.instruction = service, plan, instruction
         self.perception_model = service.perception_model
 
     def inspect_window(self, session_id, **kwargs):
         # These legacy sentinels are not execution controls for this policy.
         kwargs.pop("fps", None)
         kwargs.pop("resolution", None)
+        kwargs["inspection_goal"] = self.instruction
+        kwargs["prompt_variant"] = "instruction"
         return self.service.inspect_window(session_id, **kwargs,
             experiment_render=self.plan["experiment_render"])
 
@@ -176,8 +179,8 @@ class PolicyObserverRegistry(ObserverRegistry):
         start, end = kwargs["window"]
         request = kwargs["execution"].policy.sampling_request(end - start)
         receipt["realized_execution"].update(request, realized_frames=None,
-            realized_fps=None, realized_resolution=None)
-        return receipt
+            realized_fps=None, realized_resolution=None, backend_prompt_variant="instruction")
+        return observer_audit(receipt)
 
     def observe(self, *, execution, **kwargs):
         if not isinstance(execution, PolicyExecution):
@@ -186,7 +189,10 @@ class PolicyObserverRegistry(ObserverRegistry):
         service = self.get(observer_id)
         plan = service.plan_observer_execution(kwargs["session_id"], kwargs["window"], execution.policy)
         registry = ObserverRegistry()
-        registry.register(observer_id, _PlannedBackend(service, plan))
+        instruction = kwargs["goal"].target
+        if kwargs["goal"].reference is not None:
+            instruction += "\nReference: " + kwargs["goal"].reference
+        registry.register(observer_id, _PlannedBackend(service, plan, instruction))
         result = registry.observe(execution=execution, **kwargs)
         receipt = result["observer_execution_receipt"]
         view = result.get("view", {})
@@ -208,4 +214,6 @@ class PolicyObserverRegistry(ObserverRegistry):
         # Retain processor-specific resize/token accounting separately from the
         # actual rendered resolution: processor minimum pixels can undo savings.
         realized["input_token_accounting"] = copy.deepcopy(view.get("input_token_accounting", {}))
+        realized["backend_prompt_variant"] = "instruction"
+        result["observer_execution_receipt"] = observer_audit(receipt)
         return result

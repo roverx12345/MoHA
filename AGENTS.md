@@ -19,6 +19,9 @@
   the thin window adapter in `tools.py`, reusing the pinned execution path.
   Receipts and probes must retain the selected window. Interface changes require
   a new full calibration from H0; never reuse candidate-only episode caches.
+  `search(query, start_seconds, end_seconds, top_k?)` requires an explicit valid
+  source-time range. Filter candidates before ranking and never silently widen
+  an empty search. Retain each search's bounds in results and navigation history.
 - Use trace-local Judge proposals, one unweighted vote per failed sample, stable
   catalog-ID tie breaks, and validation-only promotion. Do not reintroduce a
   global LLM selector or confidence weights. Observer proposals follow probes;
@@ -30,6 +33,11 @@
   leave audit-only observation histories in full logs. Do not restore evicted
   facts outside the explicit memory module. A changed projection needs a fresh
   full calibration, including H0; never relabel cached old-policy episodes.
+  Tool-result events store the actual public return in `result` and execution
+  provenance separately in `audit`. Do not reinsert legacy runtime envelopes.
+  Omni uses Flat's instruction-only prompt and payload. Current observer audits
+  retain instruction/evidence_type/reference; readers also accept immutable old
+  typed requests. Do not rewrite historical requests to look like current ones.
 - Memory is an append-only result ledger and a separate working-note ledger.
   Keep original observations, duplicate records, conflicts, scope and caveats.
   Planner reads original records and writes notes explicitly; no summaries,
@@ -62,7 +70,7 @@
 - Never delete completed experiments to make the source look clean.
 - Existing runs use their frozen source; do not edit their code or artifacts in place.
 - Keep observer output recovery in `observer.py`: unchanged first request, one
-  same-media/goal retry for unusable observation JSON or window-relative times,
+  same-media/instruction retry for unusable observation JSON or window-relative times,
   capped at 2048 output tokens (or an existing lower cap). Charge and audit both
   attempts; never expose invalid facts as evidence. Exhaustion is explicit tool
   feedback and an inconclusive probe, while infrastructure errors remain fatal.

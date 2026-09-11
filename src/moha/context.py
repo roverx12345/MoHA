@@ -5,7 +5,7 @@ import json
 from .models import canonical
 
 
-PLANNER_CONTEXT_POLICY = "moha_planner_context_v4"
+PLANNER_CONTEXT_POLICY = "moha_public_tool_results_v5"
 STATE_FIELDS = ("player_state", "navigation")
 HISTORY_NOTICE = (
     "\n\n[Context note] Some earlier planner/tool turns were omitted. Use the "
@@ -22,12 +22,19 @@ def fields(value, names):
 
 
 def search_context(value):
-    return fields(value, ("query", "keywords", "modality", "bounds", "candidates",
-                          "last_search_id", "history", "available", "reason"))
+    return fields(value, ("search_id", "query", "bounds", "candidates", "evidence_status",
+                          "last_search_id", "history", "available", "reason", "search_unavailable", "message"))
+
+
+def observation_context(value):
+    # Claims and their qualifiers remain exact. These three fields only describe
+    # storage/schema provenance, already available in provider records and audits.
+    return {k: copy.deepcopy(v) for k, v in value.items()
+            if k not in {"observation_schema_version", "raw_output_sha256", "view_id"}}
 
 
 def tool_context(result, *, keep_state=True):
-    """Expose a small evidence contract; retain full envelopes only in records."""
+    """Expose evidence and navigation; execution audits are recorded separately."""
     value = fields(result, ("tool", "isError", "status", "reason", "reason_code", "error_type",
                             "error", "message", "recoverable", "candidates", "audit", "audit_status",
                             "result_memory", "working_memory", "working_note", "no_novelty",
@@ -48,7 +55,9 @@ def tool_context(result, *, keep_state=True):
         for key in ("observation", "evidence", "asr", "image_analysis", "overview", "search"):
             if key not in layer:
                 continue
-            item = search_context(layer[key]) if key == "search" and isinstance(layer[key], dict) else copy.deepcopy(layer[key])
+            item = (search_context(layer[key]) if key == "search" and isinstance(layer[key], dict)
+                    else observation_context(layer[key]) if key == "observation" and isinstance(layer[key], dict)
+                    else copy.deepcopy(layer[key]))
             if key not in value:
                 value[key] = item
             elif value[key] != item:
@@ -62,7 +71,7 @@ def tool_context(result, *, keep_state=True):
                    ("window", "goal", "instruction", "evidence_type", "reference", "sampling"))
     receipt = result.get("observer_execution_receipt")
     if isinstance(receipt, dict):
-        scope.update(fields(receipt, ("window", "goal")))
+        scope.update(fields(receipt, ("window", "goal", "instruction", "evidence_type", "reference")))
         scope["sampling"] = fields(receipt.get("realized_execution", {}),
                                    ("fps", "resolution", "sampled_frames", "modalities"))
     goal = scope.pop("goal", None)

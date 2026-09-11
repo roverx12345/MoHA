@@ -4,7 +4,7 @@ import copy
 import json
 import uuid
 from .models import Harness, Sample, canonical
-from .records import normalize, visible_observations
+from .records import normalize, visible_observations, observer_audit
 from .context import PLANNER_CONTEXT_POLICY, bounded_history, tool_context, fields
 from .memory import MEMORY_POLICY, ObservationMemory, memory_tools
 from .verification import (VERIFICATION_POLICY, VERIFICATION_CAPABILITY, diagnosis_messages,
@@ -49,7 +49,7 @@ tool call. Memory reads preserve original scope and caveats; they do not verify 
 
 
 class RecordingRegistry:
-    """Preserve unabridged results while the shared dispatcher compacts model input."""
+    """Dispatch one small public result and record execution audits separately."""
     def __init__(self, registry, emit, memory=None):
         self.registry, self.emit = registry, emit
         self.memory = memory
@@ -60,6 +60,21 @@ class RecordingRegistry:
     def __getattr__(self, key):
         return getattr(self.registry, key)
 
+    @staticmethod
+    def error(exc, *, tool=None):
+        from flat.agent.harness import _error_result
+        return tool_context(_error_result(exc, tool=tool))
+
+    def record(self, name, raw_result):
+        result = tool_context({**raw_result, "tool": name})
+        receipt = raw_result.get("observer_execution_receipt")
+        audit = {"observer_execution_receipt": observer_audit(receipt)} if isinstance(receipt, dict) else {}
+        self.emit(kind="tool_result", step=self.step, tool=name, call_id=self.call_id,
+                  result=result, **({"audit": audit} if audit else {}))
+        if self.memory is not None:
+            self.memory.add(result)
+        return result
+
     def invoke(self, name, arguments, **kwargs):
         from flat.agent.harness import _error_result
         from flat.core.errors import ProviderError, MediaError, CredentialError
@@ -69,13 +84,8 @@ class RecordingRegistry:
             if isinstance(exc, (ProviderError, MediaError, CredentialError, OSError)) or not isinstance(exc, (ValueError, PermissionError)):
                 self.fatal_error = type(exc).__name__
                 self.fatal_failure = classify_failure(exc)
-            self.emit(kind="tool_result", step=self.step, tool=name, call_id=self.call_id,
-                      result=_error_result(exc, tool=name))
-            raise
-        self.emit(kind="tool_result", step=self.step, tool=name, call_id=self.call_id, result=result)
-        if self.memory is not None:
-            self.memory.add(result)
-        return result
+            result = _error_result(exc, tool=name)
+        return self.record(name, result)
 
 
 class EpisodeRunner:
@@ -87,7 +97,7 @@ class EpisodeRunner:
         self.lane = lane
 
     def run(self, harness: Harness, sample: Sample, repeat: int):
-        from flat.agent.harness import VideoToolRegistry, ToolDispatcher, _tool_message
+        from flat.agent.harness import VideoToolRegistry, _tool_message
         from .tools import WindowPlayerRegistry, PLANNER_TOOL_POLICY
         from flat.agent.compaction import _compact_initial_state
         from flat.agent.observer_registry import ObserverHarnessConfig, FixedObserverExecution
@@ -142,13 +152,15 @@ class EpisodeRunner:
                 ocr_specialist_backend=self.ocr_backend, asr_specialist_backend=self.asr_backend,
                 retrieval_stagnation_guard=harness.retrieval_guard)
             registry = RecordingRegistry(player, emit, memory)
-            dispatcher = ToolDispatcher(registry)
+            dispatcher = registry
             task_context = {"task": sample.task, "initial": _compact_initial_state(started, initial)}
+            task_context["initial"] = {"media": fields(task_context["initial"].get("media", {}),
+                ("duration_seconds", "has_audio"))}
             if harness.overview:
                 overview = player.initialize_overview()
-                emit(kind="tool_result", step=0, tool="video_overview", call_id="prefetch", result=overview)
+                registry.call_id = "prefetch"
+                overview = registry.record("video_overview", overview)
                 task_context["overview"] = overview
-                task_context["initial"] = _compact_initial_state(started, self.service.get_state(session_id))
             messages = raw["messages"]
             messages.extend([{"role": "system", "content": PLANNER_PROMPT},
                              {"role": "user", "content": canonical(task_context)}])
@@ -334,7 +346,7 @@ class EpisodeRunner:
                     messages.append(_tool_message(call.id, result))
                     if registry.fatal_error:
                         raise ExecutionFailure(registry.fatal_failure)
-            raw["player_state"] = player.snapshot()
+            raw["navigation"] = tool_context({"player_state": player.snapshot()}).get("navigation", {})
         except Exception as exc:
             raw["status"] = "error"
             raw["failure"] = classify_failure(exc)

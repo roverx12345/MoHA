@@ -1,13 +1,15 @@
 """Planner-selected time windows over the pinned Flat observer execution."""
 from __future__ import annotations
 import math
-from flat.agent.player import VideoPlayerRegistry, PlayerProtocolError
+import copy
+from flat.agent.player import VideoPlayerRegistry, PlayerProtocolError, normalize_initial_omni_search_query
 from flat.agent.observer_registry import ObserverGoal
 from .models import Harness
 from .observer import PolicyExecution, PolicyObserverRegistry
+from .records import observer_audit
 
 
-PLANNER_TOOL_POLICY = "moha_observation_instructions_v3"
+PLANNER_TOOL_POLICY = "moha_scoped_search_instructions_v4"
 
 
 class WindowPlayerRegistry(VideoPlayerRegistry):
@@ -42,10 +44,20 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
             if function["name"] == "video_player_search":
                 function["name"] = "search"
                 function["description"] = (
-                    "Search the video for candidate moments. Returned source-time windows "
+                    "Search only the explicit source-time range for candidate moments. "
+                    "For a global search, set start_seconds=0 and end_seconds to the video duration. "
+                    "An empty result never widens the range automatically. Returned windows "
                     "are navigation hints, not evidence or limits on observation. Use their "
                     "timestamps to choose a window for observe."
                 )
+                parameters = function["parameters"]
+                parameters["properties"].update({
+                    "start_seconds": {"type": "number", "minimum": 0,
+                        "description": "Search range start in source-video seconds."},
+                    "end_seconds": {"type": "number", "minimum": 0,
+                        "description": "Search range end in source-video seconds, at most the video duration."},
+                })
+                parameters["required"] = ["query", "start_seconds", "end_seconds"]
             elif function["name"] == "video_player_observe":
                 function["name"] = "observe"
                 function["description"] = (
@@ -84,33 +96,25 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
         if action == "observe" and backend_result is not None:
             receipt = backend_result.get("observer_execution_receipt")
             if isinstance(receipt, dict):
-                receipt["candidate_id"] = None
+                backend_result["observer_execution_receipt"] = observer_audit(receipt)
         public_action = "search" if action == "video_player_search" else action
         return super()._envelope(public_action, backend_tool=backend_tool, backend_result=backend_result)
 
     def invoke(self, name, arguments, *, session_id=None):
+        if session_id is not None and session_id != self.session_id:
+            raise PermissionError("tool request session does not match the active episode")
         if name == "search":
-            return super().invoke("video_player_search", arguments, session_id=session_id)
+            return self._search(arguments)
         if name != "observe":
             raise PlayerProtocolError(f"unknown planner tool {name!r}")
-        if session_id is not None and session_id != self.session_id:
-            raise PermissionError("player action session does not match the active episode")
         required = {"start_seconds", "end_seconds", "instruction", "evidence_type"}
         if not required <= set(arguments) or set(arguments) - required - {"reference"}:
             raise PlayerProtocolError("observe requires start_seconds, end_seconds, instruction and "
                                       "evidence_type; only reference is optional")
-        start, end = arguments["start_seconds"], arguments["end_seconds"]
-        if any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t)
-               for t in (start, end)):
-            raise PlayerProtocolError("observation timestamps must be finite numbers")
-        if not 0 <= start < end <= self.state.duration_seconds:
-            raise PlayerProtocolError(
-                f"require 0 <= start_seconds < end_seconds <= {self.state.duration_seconds}"
-            )
+        start, end = self._window(arguments)
         # Validate the semantic request before changing state or consuming media.
         try:
-            # Adapt the public instruction to Flat's stable internal receipt and
-            # routing type. No wording, support or observer selection is inferred.
+            # Adapt the public instruction to Flat's internal routing type.
             internal = {"target": arguments["instruction"], "type": arguments["evidence_type"]}
             if "reference" in arguments:
                 internal["reference"] = arguments["reference"]
@@ -135,8 +139,43 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
         except Exception as exc:
             receipt = getattr(exc, "observer_execution_receipt", None)
             if isinstance(receipt, dict):
-                receipt["candidate_id"] = None
-                # The pinned player numbers successful observations only. Give
-                # failed requests their own IDs so the next success cannot collide.
+                receipt.pop("candidate_id", None)
                 receipt["receipt_id"] += f"-failed-{self.state.action_count}"
             raise
+
+    def _window(self, arguments):
+        start, end = arguments["start_seconds"], arguments["end_seconds"]
+        if any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t)
+               for t in (start, end)):
+            raise PlayerProtocolError("timestamps must be finite numbers")
+        if not 0 <= start < end <= self.state.duration_seconds:
+            raise PlayerProtocolError(
+                f"require 0 <= start_seconds < end_seconds <= {self.state.duration_seconds}"
+            )
+        return float(start), float(end)
+
+    def _search(self, arguments):
+        required = {"query", "start_seconds", "end_seconds"}
+        if not required <= set(arguments) or set(arguments) - required - {"top_k"}:
+            raise PlayerProtocolError("search requires query, start_seconds and end_seconds; only top_k is optional")
+        start, end = self._window(arguments)
+        query = normalize_initial_omni_search_query(arguments["query"])
+        top_k = arguments.get("top_k", 3)
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k not in {1, 2, 3, 5}:
+            raise PlayerProtocolError("top_k must be one of 1, 2, 3, or 5")
+        bounds = {"start_seconds": start, "end_seconds": end}
+        if self.state.retrieval_guard_active:
+            result = self._search_unavailable_result("search")
+            result["search"].update(bounds=bounds, query=query, available=False)
+            return result
+        backend_result = self.backend.invoke_natural_language_search(query, top_k=top_k,
+            start_seconds=start, end_seconds=end, session_id=self.session_id)
+        result = self._attach_recorded_search("search", backend_tool="video_search",
+            backend_result=backend_result, query=query, top_k=top_k)
+        result["search"]["bounds"] = bounds
+        if not result["search"]["candidates"]:
+            result["search"]["reason"] = "no_candidates_in_requested_range"
+        if not backend_result.get("isError"):
+            self.state.search_history[-1]["bounds"] = copy.deepcopy(bounds)
+        result["player_state"] = self.snapshot()
+        return result

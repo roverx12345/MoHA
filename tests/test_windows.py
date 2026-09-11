@@ -25,6 +25,53 @@ def observe(start, end, goal=None):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires the pinned Video OS runtime")
 class WindowTests(unittest.TestCase):
+    def test_search_passes_scope_to_backend_and_history_without_moving_window(self):
+        class Scoped(Service):
+            def search(self, session_id, **kwargs):
+                self.calls.append(("search", kwargs))
+                return {"candidates": [{"start_seconds": 25, "end_seconds": 27}],
+                        "bounds": {"start_seconds": kwargs["start_seconds"], "end_seconds": kwargs["end_seconds"]}}
+        registry, service = self.registry(Scoped())
+        before = registry.snapshot()
+        result = registry.invoke("search", {"query": "a visible action", "start_seconds": 20,
+                                            "end_seconds": 40, "top_k": 1})
+        sent = service.calls[-1][1]
+        self.assertEqual((sent["start_seconds"], sent["end_seconds"], sent["max_results"]), (20, 40, 1))
+        self.assertEqual(result["search"]["bounds"], {"start_seconds": 20, "end_seconds": 40})
+        after = registry.snapshot()
+        self.assertEqual(after["search"]["history"][-1]["bounds"], result["search"]["bounds"])
+        self.assertEqual(after["current_window"], before["current_window"])
+        self.assertEqual(after["visited_windows"], before["visited_windows"])
+        schema = next(s["function"]["parameters"] for s in registry.schemas() if s["function"]["name"] == "search")
+        self.assertEqual(set(schema["required"]), {"query", "start_seconds", "end_seconds"})
+
+    def test_empty_scoped_search_does_not_retry_or_widen(self):
+        class Empty(Service):
+            def search(self, session_id, **kwargs):
+                self.calls.append(("search", kwargs))
+                return {"candidates": []}
+        registry, service = self.registry(Empty())
+        result = registry.invoke("search", {"query": "action", "start_seconds": 20, "end_seconds": 21})
+        self.assertEqual([c[0] for c in service.calls], ["begin", "search"])
+        self.assertEqual(result["search"]["candidates"], [])
+        self.assertEqual(result["search"]["bounds"], {"start_seconds": 20, "end_seconds": 21})
+        self.assertEqual(result["search"]["reason"], "no_candidates_in_requested_range")
+
+    def test_invalid_search_scope_is_rejected_before_state_or_backend_changes(self):
+        registry, service = self.registry()
+        valid = {"query": "action", "start_seconds": 0, "end_seconds": 60}
+        invalid = [{"query": "action"}, {k: v for k, v in valid.items() if k != "end_seconds"},
+                   {**valid, "unknown": True}, {**valid, "top_k": True}]
+        invalid += [{**valid, "start_seconds": a, "end_seconds": b}
+                    for a, b in [(-1, 20), (0, 61), (20, 20), (20, 10), (True, 20),
+                                 (0, "20"), (float("nan"), 20), (0, float("inf"))]]
+        before = copy.deepcopy(registry.snapshot()); calls = copy.deepcopy(service.calls)
+        for args in invalid:
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                registry.invoke("search", args)
+            self.assertEqual(registry.snapshot(), before)
+            self.assertEqual(service.calls, calls)
+
     def registry(self, service=None):
         from moha.tools import WindowPlayerRegistry
         from flat.agent.harness import VideoToolRegistry
@@ -45,11 +92,12 @@ class WindowTests(unittest.TestCase):
         self.assertNotIn("resolution", wire)
         receipt = receipts(episode.events)[0]
         self.assertEqual(receipt["window"], [5, 35])
-        self.assertIsNone(receipt["candidate_id"])
-        self.assertEqual(receipt["goal"], GOAL)
+        self.assertNotIn("candidate_id", receipt)
+        self.assertEqual(receipt["instruction"], GOAL["target"])
+        self.assertEqual(receipt["evidence_type"], GOAL["type"])
         self.assertEqual(episode.raw["planner_tool_policy"], PLANNER_TOOL_POLICY)
-        self.assertIsNone(episode.raw["player_state"]["active_candidate_id"])
-        self.assertEqual(episode.raw["player_state"]["visited_windows"], [[5, 35]])
+        self.assertNotIn("player_state", episode.raw)
+        self.assertEqual(episode.raw["navigation"]["visited_windows"], [[5, 35]])
         sent = json.loads(planner.calls[-1]["messages"][-2]["content"])
         self.assertEqual(sent["observation_context"]["window"], [5, 35])
         self.assertNotIn("candidate_id", sent["observation_context"])
@@ -70,14 +118,14 @@ class WindowTests(unittest.TestCase):
                 self.calls.append(("search", kwargs))
                 return {"candidates": [{"start_seconds": 10, "end_seconds": 12}]}
         service = ShortSearch()
-        planner = Planner([call("search", {"query": "action"}),
+        planner = Planner([call("search", {"start_seconds": 0, "end_seconds": 60, "query": "action"}),
                            observe(5, 25), observe(40, 55), ANSWER])
         episode = EpisodeRunner(service, planner).run(Harness(), sample("unit"), 0)
         self.assertEqual(episode.status, "completed", episode.raw)
         windows = [(c[1]["start_seconds"], c[1]["end_seconds"]) for c in service.calls if c[0] == "observe"]
         self.assertEqual(windows, [(5, 25), (40, 55)])
         self.assertEqual([r["window"] for r in receipts(episode.events)], [[5, 25], [40, 55]])
-        self.assertEqual(episode.raw["player_state"]["visited_windows"], [[5, 25], [40, 55]])
+        self.assertEqual(episode.raw["navigation"]["visited_windows"], [[5, 25], [40, 55]])
 
     def test_fractional_end_and_subsecond_support_are_not_shifted_or_rounded(self):
         class Fractional(Service):
@@ -89,7 +137,7 @@ class WindowTests(unittest.TestCase):
         episode = EpisodeRunner(service, planner).run(Harness(), sample("unit"), 0)
         self.assertEqual(episode.status, "completed", episode.raw)
         self.assertEqual(receipts(episode.events)[0]["window"], [59.923456, 60.123457])
-        self.assertEqual(episode.raw["player_state"]["current_window"], [59.923456, 60.123457])
+        self.assertEqual(episode.raw["navigation"]["current_window"], [59.923456, 60.123457])
 
     def test_invalid_windows_or_controls_leave_state_and_backend_unchanged(self):
         registry, service = self.registry()
@@ -148,8 +196,9 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(episode.status, "error")
         receipt = receipts(episode.events)[0]
         self.assertEqual(receipt["window"], [3, 43])
-        self.assertIsNone(receipt["candidate_id"])
-        self.assertEqual(receipt["goal"], GOAL)
+        self.assertNotIn("candidate_id", receipt)
+        self.assertEqual(receipt["instruction"], GOAL["target"])
+        self.assertEqual(receipt["evidence_type"], GOAL["type"])
         self.assertEqual(receipt["realized_execution"]["target_frames"], 40)
         self.assertEqual(receipt["realized_execution"]["target_fps"], 1)
         self.assertIsNone(receipt["realized_execution"]["realized_frames"])
@@ -198,8 +247,9 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed", result)
         receipt = result["result"]["observer_execution_receipt"]
         self.assertEqual(receipt["window"], [5, 45])
-        self.assertIsNone(receipt["candidate_id"])
-        self.assertEqual(receipt["goal"], original["goal"])
+        self.assertNotIn("candidate_id", receipt)
+        self.assertEqual(receipt["instruction"], original["instruction"])
+        self.assertEqual(receipt["evidence_type"], original["evidence_type"])
         self.assertEqual([c[0] for c in service.calls], ["begin", "observe"])
 
     def test_specialist_routes_preserve_the_planner_window(self):
@@ -221,5 +271,5 @@ class WindowTests(unittest.TestCase):
                 self.assertEqual([c[0] for c in service.calls], ["begin", specialist])
                 receipt = receipts(episode.events)[0]
                 self.assertEqual(receipt["window"], [5, 25])
-                self.assertIsNone(receipt["candidate_id"])
+                self.assertNotIn("candidate_id", receipt)
                 self.assertTrue(receipt["specialist_active"])

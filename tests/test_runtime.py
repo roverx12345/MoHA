@@ -72,7 +72,7 @@ def call(name, arguments, id="call"):
 
 
 def script(final=None):
-    return [call("search", {"query": "jumping person", "top_k": 3}, "search"),
+    return [call("search", {"start_seconds": 0, "end_seconds": 60, "query": "jumping person", "top_k": 3}, "search"),
             call("observe", {"start_seconds": 10, "end_seconds": 20,
                                          "instruction": 'person action', "evidence_type": 'general'}, "observe"),
             {"role": "assistant", "content": json.dumps(final or {"status": "answered", "answer": "A"})}]
@@ -118,9 +118,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("observations", sent["navigation"])
         self.assertNotIn("observer_execution_receipt", sent)
         self.assertEqual(sent["observation"]["facts"][0]["fact"], "A person jumps.")
-        raw = next(e["result"] for e in result.events if e["kind"] == "tool_result" and e["tool"] == "observe")
-        self.assertIn("observer_execution_receipt", raw)
-        self.assertTrue(raw["player_state"]["observations"])
+        event = next(e for e in result.events if e["kind"] == "tool_result" and e["tool"] == "observe")
+        self.assertEqual(event["result"], sent)
+        self.assertNotIn("player_state", event["result"])
+        self.assertNotIn("backend_result", event["result"])
+        self.assertNotIn("budget", event["result"])
+        self.assertNotIn("observer_execution_receipt", event["result"])
+        self.assertEqual(event["audit"]["observer_execution_receipt"]["instruction"], "person action")
+        self.assertNotIn("goal", event["audit"]["observer_execution_receipt"])
         self.assertNotIn("evidence_memory", planner.calls[-1]["messages"][-1]["content"])
         self.assertEqual(result.raw["planner_context_policy"], PLANNER_CONTEXT_POLICY)
         self.assertEqual([e for e in result.events if e["kind"] == "context"][-1]["messages"], planner.calls[-1]["messages"])

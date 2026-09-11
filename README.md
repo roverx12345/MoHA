@@ -93,7 +93,7 @@ PYTHONPATH=src python -m moha demo --output /tmp/moha-demo
 
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
-Planner 用 `observe(start_seconds, end_seconds, instruction, evidence_type)` 直接选择源视频时间范围，并给 Observer 一条具体指令或问题。`instruction` 写明观察对象和需要报告的可见／可听事实，必要时要求时间、顺序和不确定性；`evidence_type` 保留现有证据类型和路由，`reference` 仅在 `relation` 时可选。内部 Flat 记录仍以原有 goal 结构保存，供回执和固定支持探针使用。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
+Planner 用 `observe(start_seconds, end_seconds, instruction, evidence_type)` 直接选择源视频时间范围，并给 Observer 一条具体指令或问题。`instruction` 写明观察对象和需要报告的可见／可听事实，必要时要求时间、顺序和不确定性；`evidence_type` 保留现有证据类型和路由，`reference` 仅在 `relation` 时可选。Omni 实际请求也使用 `instruction`，通过 Flat 的专用观察提示执行；MoHA 审计回执保存同名指令与类型，固定支持探针读取这些字段，同时兼容旧记录。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
 
 ```json
 {"start_seconds": 95, "end_seconds": 120,
@@ -103,9 +103,11 @@ Planner 用 `observe(start_seconds, end_seconds, instruction, evidence_type)` �
 
 接口要求有限数值且 `0 <= start_seconds < end_seconds <= duration_seconds`；非法范围返回工具错误供 planner 修正，不静默移动、扩大、裁剪或取整窗口。帧率、分辨率、采样及 observer/specialist 路由仍由 harness 和固定 Flat 执行层决定，原有媒体与预算约束继续生效。
 
-`tools.py` 适配时间选择、schema 与 observer 执行策略，复用固定运行时的观察、specialist、预算与 receipt 路径。模型侧工具只叫 `search`、`observe`，检索仍使用原来的无显式时间边界接口。直接窗口的内部 receipt 保留实际时间与目标，`candidate_id` 为 `null`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_semantic_windows_v2` 标记此接口。
+`search(query, start_seconds, end_seconds, top_k?)` 必须显式指定有效源时间范围；全局检索传 `0` 到视频时长。范围筛选发生在相似度排名之前，候选窗口裁剪在指定范围内。范围内没有候选时返回空结果与原因，不自动改成全局检索；结果和搜索历史均保留本次边界。Search 不移动当前观察窗口。
 
-`context.py` 的 `moha_planner_context_v3` 在历史截断前生成模型输入。初始输入仅保留题目、视频时长和是否有音轨；工具反馈保留检索候选、当前/已观察窗口、完整观察事实与不确定性、窗口/采样范围和可操作错误。重复底层结果只在内容完全相同时去重，冲突证据保留。感知预算 ledger、advisory limits、底层工具建议、provider/请求哈希及重复内部状态只留在原始记录中，不传给 Planner。剩余模型调用数、启用模块及其可用状态仍是模型可用的行动约束。
+`tools.py` 适配时间选择、schema 与 observer 执行策略，复用固定运行时的观察、specialist、预算与 receipt 路径。模型侧工具只叫 `search`、`observe`。直接窗口的审计回执保留实际时间与指令，不输出无意义的空 `candidate_id`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_scoped_search_instructions_v4` 标记此接口。
+
+`context.py` 的 `moha_public_tool_results_v5` 统一实际工具返回和历史输入。初始输入仅保留题目、视频时长和是否有音轨；工具反馈保留检索候选、当前/已观察窗口、完整观察事实与不确定性、窗口/采样范围和可操作错误。去除存储元数据后，相同观察副本去重，冲突证据保留。轨迹中 `tool_result.result` 就是公开返回，执行回执另存 `tool_result.audit`；感知预算、provider/请求哈希等仍可从独立审计与感知记录追溯。公开返回不含 `player_state`、`backend_result` 或预算 ledger。剩余模型调用数、启用模块及其可用状态仍是模型可用的行动约束。
 
 最终调用清空工具定义，并由固定 Flat adapter 在 HTTP 请求体显式发送 `tool_choice: "none"`，包括审查和审查后的最终答复；若服务端仍返回工具调用，继续按协议拒绝执行，不额外消耗观察预算，也不重试审查。完整原始工具结果和实际投影后的每轮输入分别保存。
 
@@ -126,7 +128,7 @@ H0 保留 `frames=auto / source_scale=1.0 / priority=balanced`，等价于目标
 不能与 `target_fps` 同时指定。`auto` 随窗口长度增长，不表示每次固定采满 128 帧。
 例如 25 秒窗口在三档 FPS 下请求 13、25、50 帧。目标级设置只覆盖写出的字段；
 例如 `{"execution":{"default":{},"text":{"source_scale":0.75}}}` 只改变 text 的空间目标。
-catalog 为八类 typed goal 提供单字段 probe 候选，包括 speech；最终九组选择统一设置默认策略。
+catalog 为八类 evidence_type 提供单字段 probe 候选，包括 speech；最终九组选择统一设置默认策略。
 帧数和比例是目标上限，最终输入还受源帧数、codec 尺寸、`f_view/p_view/p_call/b_video` 约束。
 
 `execution.py` 在同一可行集合中分配预算：枚举不超过目标值的整数帧数，以及从目标边长比例开始每档乘 0.9 的降采样阶梯。
@@ -221,7 +223,7 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 ## Planner 上下文
 
-`context.py` 在原有历史轮数与 token 上限生效之前投影 planner 输入：完整 observation 正文、事实 ID、否定结果、不确定性、时间范围与候选句柄仍保留；历史工具消息中的重复 player/budget/state 快照只保留最新一份。最新状态中的候选目录、搜索历史、访问窗口和预算继续可见，旧 search 消息单独保留其返回的候选句柄。
+`context.py` 在原有历史轮数与 token 上限生效之前投影 planner 输入：完整 observation 正文、事实 ID、否定结果、不确定性、时间范围与候选句柄仍保留。历史消息中的导航快照只保留最新一份，其中包括候选目录、带范围的搜索历史和访问窗口；旧 search 消息仍保留各自的范围和返回候选。采样与预算执行审计不进入导航状态。
 
 没有事实正文的历史 observation ID/fact IDs、观察审计记录和版本标识不再反复进入 planner 上下文。实际观察仍携带其窗口、目标与简要采样信息。完整工具结果、执行 receipt、原始消息都留在轨迹中；每步 context 事件记录真实送给 planner 的消息，`planner_context_policy` 标记投影规则。
 

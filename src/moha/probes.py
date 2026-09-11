@@ -4,7 +4,7 @@ import uuid
 from .catalog import catalog
 from .execution import plan_signature
 from .models import digest
-from .records import receipts, usage_from
+from .records import receipts, usage_from, observation_request
 from .roles import StructuredRole, object_schema
 
 
@@ -52,15 +52,18 @@ class ProbeRunner:
         session = self.service.begin_episode(sample.asset_id)["session_id"]
         registry = PolicyObserverRegistry()
         registry.register("omni", self.service)
-        goal = ObserverGoal.from_mapping(original["goal"], allow_coverage=False, require_relation_reference=False)
+        request = observation_request(original)
+        goal = ObserverGoal(type=request["evidence_type"], target=request["instruction"],
+                            reference=request.get("reference"), _require_relation_reference=False)
         # No planner, no search replay and no answer/label reaches the observer.
         try:
             result = registry.observe(config=ObserverHarnessConfig(), execution=execution,
                 session_id=session, window=tuple(original["window"]), goal=goal,
                 receipt_id="probe-" + run_id, candidate_id=original.get("candidate_id"))
             receipt = result["observer_execution_receipt"]
-            if any(receipt.get(k) != original.get(k) for k in ("window", "goal", "observer_id", "observer_model")):
-                raise ValueError("counterfactual changed support, goal or observer")
+            if (any(receipt.get(k) != original.get(k) for k in ("window", "observer_id", "observer_model"))
+                    or observation_request(receipt) != request):
+                raise ValueError("counterfactual changed support, instruction or observer")
             artifact = {"status": "completed", "candidate_id": candidate_id, "result": result}
         except ObserverOutputError as exc:
             artifact = {"status": "unusable", "candidate_id": candidate_id, "error_type": type(exc).__name__}
@@ -82,10 +85,10 @@ class ObserverResolver:
                   and e.get("step") in diagnosis["evidence_steps"]]
         found = receipts(events)
         valid = [r for r in found if r.get("observer_id") == "omni" and not r.get("error")
-                 and not r.get("specialist_active") and isinstance(r.get("goal"), dict)]
+                 and not r.get("specialist_active") and observation_request(r).get("evidence_type")]
         capability_goal = {"ocr": "text", "asr": "speech"}.get(diagnosis.get("failed_capability"))
         if capability_goal:
-            valid = [r for r in valid if r["goal"].get("type") == capability_goal]
+            valid = [r for r in valid if observation_request(r).get("evidence_type") == capability_goal]
         if not valid:
             return {"status": "inconclusive", "reason": "no cited successful generalist receipt"}
         from dataclasses import replace
@@ -94,7 +97,7 @@ class ObserverResolver:
         # One cited request, one control, and at most six unique alternatives:
         # the complete rate-policy neighbourhood (2 rates + 2 scales + 2 modes).
         original = valid[0]
-        goal = original["goal"]["type"]
+        goal = observation_request(original)["evidence_type"]
         try:
             execution = PolicyExecution.from_dict(original["requested_execution"])
             if execution.policy != harness.execution_for_goal(goal):
@@ -148,7 +151,7 @@ class ObserverResolver:
                 verdicts.append({"status": "inconclusive", "candidate_id": candidate_id, "reason": "execution change unverified or ineffective"})
                 continue
             payload = {"task": sample.task, "expected_answer": sample.expected_answer,
-                       "goal": original["goal"], "original_evidence": events,
+                       "request": observation_request(original), "original_evidence": events,
                        "baseline": baseline["result"], "alternative": alternative["result"],
                        "observer_output_recoveries": {name: item["perception_receipt"].get("observer_output_recoveries", [])
                            for name, item in (("baseline", baseline), ("alternative", alternative))}}

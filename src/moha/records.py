@@ -2,7 +2,33 @@
 from __future__ import annotations
 import math
 import json
+import copy
 from .models import Episode, Harness, Sample, digest
+
+
+def observation_request(receipt):
+    """Read current instructions or an immutable historical typed request."""
+    if "instruction" in receipt:
+        return {k: copy.deepcopy(receipt[k]) for k in ("instruction", "evidence_type", "reference")
+                if k in receipt}
+    old = receipt.get("goal", {})
+    return {public: copy.deepcopy(old[internal]) for public, internal in
+            (("instruction", "target"), ("evidence_type", "type"), ("reference", "reference"))
+            if internal in old}
+
+
+def observer_audit(receipt):
+    """Keep execution/probe provenance separate from the public tool result."""
+    value = copy.deepcopy(receipt)
+    value.update(observation_request(value))
+    value.pop("goal", None)
+    value.pop("budget_after", None)  # The session ledger already records accounting.
+    if value.get("candidate_id") in (None, ""):
+        value.pop("candidate_id", None)
+    if isinstance(value.get("receipt_id"), str):
+        value["receipt_id"] = value["receipt_id"].removeprefix("player-")
+    value["receipt_version"] = "moha_observer_audit_v1"
+    return value
 
 
 def numeric(value):
@@ -31,6 +57,7 @@ def receipts(events: list[dict]) -> list[dict]:
     for event in events:
         if event["kind"] == "tool_result":
             walk(event.get("result", {}))
+            walk(event.get("audit", {}))
     return list(found.values())
 
 
