@@ -5,64 +5,89 @@ import json
 from .models import canonical
 
 
-PLANNER_CONTEXT_POLICY = "moha_planner_context_v2"
-STATE_FIELDS = ("player_state", "state", "budget")
+PLANNER_CONTEXT_POLICY = "moha_planner_context_v3"
+STATE_FIELDS = ("player_state", "navigation")
 HISTORY_NOTICE = (
     "\n\n[Context note] Some earlier planner/tool turns were omitted. Use the "
     "retained observations and explicit evidence memory, if supplied. Each "
     "observation is scoped to its window and goal; missing evidence within that "
-    "view does not establish absence across the video. Latest player/budget state "
-    "records current navigation and resources. Newer observations do not "
+    "view does not establish absence across the video. Latest navigation state "
+    "records the current and previously inspected windows. Newer observations do not "
     "automatically override earlier or conflicting evidence."
 )
 
 
+def fields(value, names):
+    return {k: copy.deepcopy(value[k]) for k in names if k in value}
+
+
+def search_context(value):
+    return fields(value, ("query", "keywords", "modality", "bounds", "candidates",
+                          "last_search_id", "history", "available", "reason"))
+
+
 def tool_context(result, *, keep_state=True):
-    """Keep evidence and actionable handles; remove audit-only state history."""
-    value = copy.deepcopy(result)
-    player = value.get("player_state")
+    """Expose a small evidence contract; retain full envelopes only in records."""
+    value = fields(result, ("tool", "isError", "status", "reason", "reason_code", "error_type",
+                            "error", "message", "recoverable", "candidates", "audit", "audit_status",
+                            "result_memory", "working_memory", "working_note", "no_novelty",
+                            "restored_after_eviction", "memory_read_masked", "result_records",
+                            "working_notes", "source_ids", "ledger"))
+    if value.get("tool") in ("video_player_search", "video_player_observe"):
+        value["tool"] = value["tool"].removeprefix("video_player_")
+    # Parsed audit already contains its diagnosis. Invalid raw output remains
+    # explicit, with its invalid status, but provider receipts never reach input.
+    if "diagnosis" in result and not isinstance(result.get("audit"), dict):
+        value["diagnosis"] = copy.deepcopy(result["diagnosis"])
+
+    # Flat can mirror the same evidence in three envelopes. Deduplicate only
+    # identical copies; distinct or conflicting records must remain available.
+    for layer in (result, result.get("result", {}), result.get("backend_result", {})):
+        if not isinstance(layer, dict):
+            continue
+        for key in ("observation", "evidence", "asr", "image_analysis", "overview", "search"):
+            if key not in layer:
+                continue
+            item = search_context(layer[key]) if key == "search" and isinstance(layer[key], dict) else copy.deepcopy(layer[key])
+            if key not in value:
+                value[key] = item
+            elif value[key] != item:
+                extra = {key: item}
+                if extra not in value.setdefault("additional_results", []):
+                    value["additional_results"].append(extra)
+    if isinstance(result.get("additional_results"), list):
+        value.setdefault("additional_results", []).extend(copy.deepcopy(result["additional_results"]))
+
+    scope = fields(result.get("observation_context", {}), ("window", "goal", "sampling"))
+    receipt = result.get("observer_execution_receipt")
+    if isinstance(receipt, dict):
+        scope.update(fields(receipt, ("window", "goal")))
+        scope["sampling"] = fields(receipt.get("realized_execution", {}),
+                                   ("fps", "resolution", "sampled_frames", "modalities"))
+    view = result.get("view", {})
+    if isinstance(view, dict) and isinstance(value.get("observation"), dict):
+        if "window" not in scope and "time_range_seconds" in view:
+            scope["window"] = copy.deepcopy(view["time_range_seconds"])
+        sampling = scope.setdefault("sampling", {})
+        sampling.update(fields(view, ("frame_timestamps_seconds", "modalities")))
+    if scope:
+        value["observation_context"] = scope
+
+    player = result.get("player_state", result.get("navigation"))
     if isinstance(player, dict):
-        # Older search replies still need their returned handles when their
-        # repeated state snapshots are removed. Never trim the latest catalog.
-        if not keep_state and value.get("tool") == "video_player_search":
-            search = player.get("search", {})
+        search = player.get("search", {})
+        if not keep_state and value.get("tool") == "search":
             candidates = search.get("candidates", [])
             latest = next((h for h in reversed(search.get("history", []))
                            if h.get("search_id") == search.get("last_search_id")), {})
             ids = latest.get("candidate_ids")
-            value["candidates"] = [c for c in candidates if ids is None or c.get("candidate_id") in ids]
-        for key in ("observations", "last_observation_id", "harness_version", "interface_version",
-                    "state_schema_version", "observer_profile"):
-            player.pop(key, None)
-
-    # The dispatcher puts a second, reduced player snapshot inside result.
-    # Its other fields may contain evidence and must remain intact.
-    nested = value.get("result")
-    if isinstance(nested, dict) and isinstance(player, dict):
-        nested.pop("player_state", None)
-        if not nested:
-            value.pop("result")
-
-    receipt = value.pop("observer_execution_receipt", None)
-    if isinstance(receipt, dict):
-        scope = {k: receipt[k] for k in ("candidate_id", "window", "goal") if k in receipt}
-        realized = receipt.get("realized_execution", {})
-        scope["sampling"] = {k: realized[k] for k in ("fps", "resolution", "sampled_frames", "modalities")
-                             if k in realized}
-        value["observation_context"] = scope
-
-    if not keep_state:
-        for key in STATE_FIELDS:
-            value.pop(key, None)
-    else:
-        state = value.get("state")
-        if isinstance(state, dict):
-            if state.get("budget") == value.get("budget"):
-                state.pop("budget", None)
-            runtime = state.get("state")
-            if isinstance(runtime, dict):
-                for key in ("evidence_ids", "notebook_ids"):
-                    runtime.pop(key, None)
+            value["candidates"] = copy.deepcopy([c for c in candidates if ids is None or c.get("candidate_id") in ids])
+        if keep_state:
+            navigation = fields(player, ("current_window", "visited_windows"))
+            if isinstance(search, dict) and search:
+                navigation["search"] = search_context(search)
+            if navigation:
+                value["navigation"] = navigation
     return value
 
 
@@ -90,8 +115,13 @@ def planner_messages(messages):
             initial = json.loads(result[1]["content"])
         except json.JSONDecodeError:
             initial = None
-        if isinstance(initial, dict) and isinstance(initial.get("overview"), dict):
-            initial["overview"] = tool_context(initial["overview"], keep_state=latest is None)
+        if isinstance(initial, dict) and isinstance(initial.get("initial"), dict):
+            # Perception budgets, renderer hints and unavailable low-level tools
+            # are host accounting, not instructions for the two-tool planner.
+            initial["initial"] = {"media": fields(initial["initial"].get("media", {}),
+                                                   ("duration_seconds", "has_audio"))}
+            if isinstance(initial.get("overview"), dict):
+                initial["overview"] = tool_context(initial["overview"], keep_state=latest is None)
             result[1]["content"] = canonical(initial)
     return result
 

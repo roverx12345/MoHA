@@ -1,4 +1,4 @@
-"""Planner-selected time windows over the pinned Video OS observer execution."""
+"""Planner-selected time windows over the pinned Flat observer execution."""
 from __future__ import annotations
 import math
 from flat.agent.player import VideoPlayerRegistry, PlayerProtocolError
@@ -7,7 +7,7 @@ from .models import Harness
 from .observer import PolicyExecution, PolicyObserverRegistry
 
 
-PLANNER_TOOL_POLICY = "moha_semantic_windows_v1"
+PLANNER_TOOL_POLICY = "moha_semantic_windows_v2"
 
 
 class WindowPlayerRegistry(VideoPlayerRegistry):
@@ -40,12 +40,14 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
         for item in schemas:
             function = item["function"]
             if function["name"] == "video_player_search":
+                function["name"] = "search"
                 function["description"] = (
                     "Search the video for candidate moments. Returned source-time windows "
                     "are navigation hints, not evidence or limits on observation. Use their "
-                    "timestamps to choose a window for video_player_observe."
+                    "timestamps to choose a window for observe."
                 )
             elif function["name"] == "video_player_observe":
+                function["name"] = "observe"
                 function["description"] = (
                     "Observe a source-time window for one typed evidence goal. Choose its "
                     "start and end directly; search is optional and its candidate windows "
@@ -72,16 +74,17 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
     def _envelope(self, action, *, backend_tool=None, backend_result=None):
         # The pinned Player helper stringifies its legacy candidate argument.
         # Clear that unused field before it is copied into either receipt mirror.
-        if action == "video_player_observe" and backend_result is not None:
+        if action == "observe" and backend_result is not None:
             receipt = backend_result.get("observer_execution_receipt")
             if isinstance(receipt, dict):
                 receipt["candidate_id"] = None
-        return super()._envelope(action, backend_tool=backend_tool, backend_result=backend_result)
+        public_action = "search" if action == "video_player_search" else action
+        return super()._envelope(public_action, backend_tool=backend_tool, backend_result=backend_result)
 
     def invoke(self, name, arguments, *, session_id=None):
-        if name == "video_player_search":
-            return super().invoke(name, arguments, session_id=session_id)
-        if name != "video_player_observe":
+        if name == "search":
+            return super().invoke("video_player_search", arguments, session_id=session_id)
+        if name != "observe":
             raise PlayerProtocolError(f"unknown planner tool {name!r}")
         if session_id is not None and session_id != self.session_id:
             raise PermissionError("player action session does not match the active episode")

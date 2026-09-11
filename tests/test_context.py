@@ -10,7 +10,7 @@ def message(value, call_id="call"):
 
 
 def envelope(text="The car is red."):
-    return {"tool": "video_player_observe", "isError": False,
+    return {"tool": "observe", "isError": False,
             "observation": {"observation_id": "same", "facts": [
                 {"fact_id": "same.fact_1", "fact": text, "support_time_seconds": [10, 11]}],
                 "missing": ["No readable plate"], "uncertainties": ["Color affected by lighting"]},
@@ -38,26 +38,29 @@ class ContextTests(unittest.TestCase):
         self.assertNotIn("ORPHAN", canonical(result))
         self.assertNotIn("AUDIT_ONLY", canonical(result))
         self.assertEqual(result["observation"], original["observation"])
-        self.assertEqual(result["view"], original["view"])
-        self.assertEqual(result["backend_result"], original["backend_result"])
-        self.assertEqual(result["player_state"]["search"]["candidates"], original["player_state"]["search"]["candidates"])
-        self.assertEqual(result["player_state"]["search"]["history"], original["player_state"]["search"]["history"])
-        self.assertEqual(result["player_state"]["visited_windows"], [[10, 12]])
+        self.assertNotIn("view", result)
+        self.assertNotIn("backend_result", result)
+        self.assertEqual(result["navigation"]["search"]["candidates"], original["player_state"]["search"]["candidates"])
+        self.assertEqual(result["navigation"]["search"]["history"], original["player_state"]["search"]["history"])
+        self.assertEqual(result["navigation"]["visited_windows"], [[10, 12]])
         self.assertEqual(result["observation_context"]["sampling"]["sampled_frames"], 2)
-        self.assertEqual(result["result"], {"evidence": {"claim": "Other claim"}})
-        self.assertEqual(result["budget"], {"look_used": 1})
-        self.assertNotIn("budget", result["state"])
+        self.assertEqual(result["observation_context"]["sampling"]["frame_timestamps_seconds"], [10, 11])
+        self.assertEqual(result["evidence"], {"claim": "Other claim"})
+        for key in ("result", "budget", "state", "player_state"):
+            self.assertNotIn(key, result)
         self.assertEqual(original, before)
 
     def test_only_latest_state_is_replayed_and_older_search_handles_survive(self):
         search = envelope()
-        search["tool"] = "video_player_search"
+        search["tool"] = "search"
         source = [message(search, "search"), message(envelope(), "observe")]
         result = [json.loads(m["content"]) for m in planner_messages(source)]
         self.assertEqual(result[0]["candidates"], [{"candidate_id": "s1_c1", "start_seconds": 10, "end_seconds": 12}])
         for key in ("state", "budget", "player_state"):
             self.assertNotIn(key, result[0])
-            self.assertIn(key, result[1])
+            self.assertNotIn(key, result[1])
+        self.assertNotIn("navigation", result[0])
+        self.assertIn("navigation", result[1])
         self.assertEqual(source[0]["tool_call_id"], "search")
 
     def test_conflicting_claims_with_the_same_id_are_never_overwritten(self):
@@ -78,7 +81,7 @@ class ContextTests(unittest.TestCase):
         error = {"isError": True, "error_type": "ValueError", "message": "candidate_id is unknown"}
         source = [message(envelope()), message(error)]
         result = [json.loads(m["content"]) for m in planner_messages(source)]
-        self.assertIn("player_state", result[0])
+        self.assertIn("navigation", result[0])
         self.assertEqual(result[1], error)
 
     def test_unstructured_messages_and_tool_calls_keep_their_original_content(self):
@@ -98,7 +101,35 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(result["task"], initial["task"])
         self.assertEqual(result["initial"], initial["initial"])
         self.assertEqual(result["overview"]["overview"], overview["overview"])
-        self.assertNotIn("player_state", result["overview"])
+        self.assertNotIn("navigation", result["overview"])
+
+    def test_initial_and_all_tool_inputs_exclude_host_telemetry(self):
+        telemetry = {"action_advice": ["Use next_keyframe and step_frames."],
+                     "video_token_episode_advisory_limit": 65536, "frames_used": 128}
+        initial = {"task": {"question": "Which color?"}, "initial": {
+            "media": {"duration_seconds": 30, "has_audio": True, "frame_rate": 25},
+            "sensory_budget": telemetry, "budget": {"video_tokens_used": 50}}}
+        result = envelope()
+        result["state"]["sensory_budget"] = telemetry
+        result["receipt"] = {"provider": "private endpoint", "request_sha256": "private hash"}
+        projected = planner_messages([{"role": "system", "content": "system"},
+            {"role": "user", "content": canonical(initial)}, message(result)])
+        self.assertEqual(json.loads(projected[1]["content"])["initial"],
+                         {"media": {"duration_seconds": 30, "has_audio": True}})
+        sent = canonical(projected)
+        for hidden in ("action_advice", "next_keyframe", "step_frames", "advisory_limit",
+                       "video_tokens_used", "request_sha256", "private endpoint", "sensory_budget"):
+            self.assertNotIn(hidden, sent)
+        self.assertEqual(json.loads(projected[2]["content"])["observation"], result["observation"])
+
+    def test_mirrored_evidence_deduplicates_only_identical_records(self):
+        original = envelope()
+        original["evidence"] = {"claim": "Other claim"}
+        original["backend_result"]["evidence"] = {"claim": "Conflicting claim"}
+        projected = tool_context(original)
+        self.assertEqual(projected["evidence"], {"claim": "Other claim"})
+        self.assertEqual(projected["additional_results"], [{"evidence": {"claim": "Conflicting claim"}}])
+        self.assertEqual(tool_context(projected), projected)
 
 
 if __name__ == "__main__":

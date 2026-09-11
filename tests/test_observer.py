@@ -186,7 +186,7 @@ class ObserverTests(unittest.TestCase):
     def test_exhaustion_clears_pending_state_and_planner_can_continue_without_bad_evidence(self):
         service, transport = self.service([response("TRUNCATED_BAD_FACT", finish="length"),
             response("TRUNCATED_BAD_FACT", finish="length"), response()])
-        observe = call("video_player_observe", {"start_seconds": 1, "end_seconds": 2.5,
+        observe = call("observe", {"start_seconds": 1, "end_seconds": 2.5,
             "goal": {"type": "sequence", "target": "pattern changes"}})
         planner = Planner([observe, observe, ANSWER])
         episode = EpisodeRunner(service, planner).run(Harness(memory=True), sample("unit"), 0)
@@ -228,7 +228,7 @@ class ObserverTests(unittest.TestCase):
 
     def test_probe_unusable_output_is_inconclusive_and_does_not_offer_a_rescue(self):
         from moha.probes import ObserverResolver, ProbeRunner
-        observe = call("video_player_observe", {"start_seconds": 1, "end_seconds": 2.5,
+        observe = call("observe", {"start_seconds": 1, "end_seconds": 2.5,
             "goal": {"type": "sequence", "target": "pattern changes"}})
         original_service, _ = self.service([response()])
         episode = EpisodeRunner(original_service, Planner([observe, ANSWER])).run(Harness(), sample("unit"), 0)

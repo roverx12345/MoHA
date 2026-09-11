@@ -14,7 +14,7 @@ ANSWER = {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}
 
 
 def observe(start, end, goal=None):
-    return call("video_player_observe", {"start_seconds": start, "end_seconds": end,
+    return call("observe", {"start_seconds": start, "end_seconds": end,
                                          "goal": goal or GOAL})
 
 
@@ -47,10 +47,10 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(episode.raw["player_state"]["visited_windows"], [[5, 35]])
         sent = json.loads(planner.calls[-1]["messages"][-2]["content"])
         self.assertEqual(sent["observation_context"]["window"], [5, 35])
-        self.assertIsNone(sent["observation_context"]["candidate_id"])
+        self.assertNotIn("candidate_id", sent["observation_context"])
         schemas = {s["function"]["name"]: s["function"] for s in planner.calls[0]["tools"]}
-        self.assertEqual(set(schemas), {"video_player_search", "video_player_observe"})
-        parameters = schemas["video_player_observe"]["parameters"]
+        self.assertEqual(set(schemas), {"search", "observe"})
+        parameters = schemas["observe"]["parameters"]
         self.assertEqual(set(parameters["properties"]), {"start_seconds", "end_seconds", "goal"})
         self.assertEqual(set(parameters["required"]), set(parameters["properties"]))
         self.assertFalse(parameters["additionalProperties"])
@@ -61,7 +61,7 @@ class WindowTests(unittest.TestCase):
                 self.calls.append(("search", kwargs))
                 return {"candidates": [{"start_seconds": 10, "end_seconds": 12}]}
         service = ShortSearch()
-        planner = Planner([call("video_player_search", {"query": "action"}),
+        planner = Planner([call("search", {"query": "action"}),
                            observe(5, 25), observe(40, 55), ANSWER])
         episode = EpisodeRunner(service, planner).run(Harness(), sample("unit"), 0)
         self.assertEqual(episode.status, "completed", episode.raw)
@@ -98,7 +98,7 @@ class WindowTests(unittest.TestCase):
         calls = copy.deepcopy(service.calls)
         for arguments in invalid:
             with self.subTest(arguments=arguments), self.assertRaises(ValueError):
-                registry.invoke("video_player_observe", arguments)
+                registry.invoke("observe", arguments)
             self.assertEqual(registry.snapshot(), before)
             self.assertEqual(service.calls, calls)
 
@@ -106,7 +106,7 @@ class WindowTests(unittest.TestCase):
         registry, service = self.registry()
         args = {"start_seconds": 0, "end_seconds": 10, "goal": GOAL}
         with self.assertRaises(PermissionError):
-            registry.invoke("video_player_observe", args, session_id="another")
+            registry.invoke("observe", args, session_id="another")
         with self.assertRaises(ValueError):
             registry.invoke("video_inspect_window", {**args, "fps": 8})
         self.assertEqual([x[0] for x in service.calls], ["begin"])

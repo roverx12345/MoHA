@@ -96,7 +96,7 @@ class NativeMemoryControlTests(unittest.TestCase):
 
     def test_actual_bounded_context_eviction_allows_original_evidence_recovery(self):
         planner = Planner([observe(), call("memory_read", {"ledger": "result"}),
-            call("video_player_search", {"query": "another scene", "top_k": 1}),
+            call("search", {"query": "another scene", "top_k": 1}),
             call("memory_read", {"ledger": "result"}), final()])
         result = EpisodeRunner(Service(), planner).run(Harness(memory=True, max_steps=5, history_turns=1), sample("cal"), 0)
         self.assertEqual(result.status, "completed", result.raw)

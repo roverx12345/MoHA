@@ -20,19 +20,19 @@ def fixture():
     seen_blue = initial + [{"role": "tool", "content": canonical({"observation": later})}]
     events = [
         {"kind": "context", "step": 1, "messages": initial, "visible_observations": []},
-        {"kind": "tool_call", "step": 1, "tool": "video_player_observe", "call_id": "c1",
+        {"kind": "tool_call", "step": 1, "tool": "observe", "call_id": "c1",
          "arguments": {"goal": {"type": "general", "target": "car color"}}},
-        {"kind": "tool_result", "step": 1, "tool": "video_player_observe", "call_id": "c1",
+        {"kind": "tool_result", "step": 1, "tool": "observe", "call_id": "c1",
          "result": {"observation": first, "backend_result": {"observation": first}}},
         {"kind": "context", "step": 2, "messages": seen_red, "visible_observations": [first]},
-        {"kind": "tool_call", "step": 3, "tool": "video_player_observe", "call_id": "c2",
+        {"kind": "tool_call", "step": 3, "tool": "observe", "call_id": "c2",
          "arguments": {"goal": {"type": "general", "target": "car color"}}},
-        {"kind": "tool_result", "step": 3, "tool": "video_player_observe", "call_id": "c2",
+        {"kind": "tool_result", "step": 3, "tool": "observe", "call_id": "c2",
          "result": {"observation": later}},
         {"kind": "context", "step": 4, "messages": seen_blue, "visible_observations": [later]},
         {"kind": "terminal", "step": 5, "message": {"role": "assistant", "content": '{"answer":"B"}'}}]
     e = Episode(s.sample_id, s.id, h.id, 0, list(s.video_key), "A", "B", "completed", events=events,
-                raw={"messages": initial, "tool_schemas": [{"name": "video_player_observe"}]})
+                raw={"messages": initial, "tool_schemas": [{"name": "observe"}]})
     return e, s, h
 
 

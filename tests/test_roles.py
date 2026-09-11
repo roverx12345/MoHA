@@ -15,7 +15,7 @@ def diagnosis(**kwargs):
 
 
 def payload():
-    return {"events": [{"kind": "tool_call", "step": 2, "tool": "video_player_observe",
+    return {"events": [{"kind": "tool_call", "step": 2, "tool": "observe",
                          "arguments": {"goal": {"type": "text", "target": "score"}}}]}
 
 

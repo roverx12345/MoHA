@@ -39,7 +39,7 @@ class TerminalRecoveryTests(unittest.TestCase):
     def test_nonterminal_reply_can_continue_observing_before_final_answer(self):
         planner = Planner([
             {"role": "assistant", "content": "I need to inspect the scene before deciding."},
-            call("video_player_observe", {"start_seconds": 10, "end_seconds": 20,
+            call("observe", {"start_seconds": 10, "end_seconds": 20,
                  "goal": {"type": "general", "target": "person action"}}),
             copy.deepcopy(FINAL),
         ])

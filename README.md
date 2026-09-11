@@ -93,7 +93,7 @@ PYTHONPATH=src python -m moha demo --output /tmp/moha-demo
 
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
-Planner 用 `video_player_observe(start_seconds, end_seconds, goal)` 直接选择源视频时间范围。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
+Planner 用 `observe(start_seconds, end_seconds, goal)` 直接选择源视频时间范围。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
 
 ```json
 {"start_seconds": 95, "end_seconds": 120,
@@ -102,7 +102,13 @@ Planner 用 `video_player_observe(start_seconds, end_seconds, goal)` 直接选�
 
 接口要求有限数值且 `0 <= start_seconds < end_seconds <= duration_seconds`；非法范围返回工具错误供 planner 修正，不静默移动、扩大、裁剪或取整窗口。帧率、分辨率、采样及 observer/specialist 路由仍由 harness 和固定 Flat 执行层决定，原有媒体与预算约束继续生效。
 
-`tools.py` 适配时间选择、schema 与 observer 执行策略，复用固定运行时的观察、specialist、预算与 receipt 路径。直接窗口的 receipt 保留实际时间与目标，`candidate_id` 为 `null`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_semantic_windows_v1` 标记此接口。改变时间选择能力需要新实验并重跑 H0，旧的 candidate-only episode 不能作为新接口的基线；既有冻结运行保持原接口。
+`tools.py` 适配时间选择、schema 与 observer 执行策略，复用固定运行时的观察、specialist、预算与 receipt 路径。模型侧工具只叫 `search`、`observe`，检索仍使用原来的无显式时间边界接口。直接窗口的内部 receipt 保留实际时间与目标，`candidate_id` 为 `null`；probe 继续固定该实际窗口。轨迹的 `planner_tool_policy: moha_semantic_windows_v2` 标记此接口。
+
+`context.py` 的 `moha_planner_context_v3` 在历史截断前生成模型输入。初始输入仅保留题目、视频时长和是否有音轨；工具反馈保留检索候选、当前/已观察窗口、完整观察事实与不确定性、窗口/采样范围和可操作错误。重复底层结果只在内容完全相同时去重，冲突证据保留。感知预算 ledger、advisory limits、底层工具建议、provider/请求哈希及重复内部状态只留在原始记录中，不传给 Planner。剩余模型调用数、启用模块及其可用状态仍是模型可用的行动约束。
+
+最终调用清空工具定义，并由固定 Flat adapter 在 HTTP 请求体显式发送 `tool_choice: "none"`，包括审查和审查后的最终答复；若服务端仍返回工具调用，继续按协议拒绝执行，不额外消耗观察预算，也不重试审查。完整原始工具结果和实际投影后的每轮输入分别保存。
+
+工具名和输入投影改变后，必须创建新实验并从 H0 做完整校准，不能把旧接口的 H0 或候选 episode 当作新基线。既有冻结运行保持原接口。
 
 当前 observer harness 使用 `moha_sampling_density_v2`。Planner 选择窗口，Harness
 选择窗口内的采样密度；执行时明确计算目标帧数，不依赖后端的 FPS 默认值。

@@ -60,7 +60,7 @@ class DiagnosisInputTests(unittest.TestCase):
 class NativeVerificationTests(unittest.TestCase):
     def test_observe_note_diagnose_final_uses_shared_budget_and_returns_raw_text(self):
         text = audit_response()["content"]
-        messages = [call("video_player_observe", {"start_seconds": 10, "end_seconds": 20,
+        messages = [call("observe", {"start_seconds": 10, "end_seconds": 20,
             "goal": {"type": "general", "target": "GOAL_SENTINEL"}}),
             call("memory_note", {"text": "WORKING_SENTINEL"}),
             call("verify_fresh", {"diagnostic_question": "What remains uncertain?"}),
@@ -81,12 +81,15 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertNotIn("GOAL_SENTINEL", str(fresh))
         event = next(e for e in result.events if e["kind"] == "tool_result" and e["tool"] == "verify_fresh")
         self.assertEqual(event["result"]["diagnosis"], text)
-        self.assertIn(text, json.loads(planner.calls[-1]["messages"][-2]["content"])["diagnosis"])
+        projected = json.loads(planner.calls[-1]["messages"][-2]["content"])
+        self.assertEqual(projected["audit"], json.loads(text))
+        self.assertNotIn("diagnosis", projected)
+        self.assertNotIn("receipt", projected)
         self.assertEqual(planner.calls[-1]["tool_choice"], "none")
         self.assertNotIn("evidence_ledger", result.raw)
 
     def test_budget_floor_audit_preserves_reserved_final_call(self):
-        planner = Planner([call("video_player_observe", {"start_seconds": 10, "end_seconds": 20,
+        planner = Planner([call("observe", {"start_seconds": 10, "end_seconds": 20,
             "goal": {"type": "general", "target": "action"}}), audit_response(),
             {"role": "assistant", "content": '{"status":"abstained","answer":null}'}])
         result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
@@ -105,7 +108,7 @@ class NativeVerificationTests(unittest.TestCase):
                 r["observation"]["observation_id"] = f"obs{t}"
                 r["observation"]["facts"][0]["fact"] = f"Evidence {t}"
                 return r
-        messages = [call("video_player_observe", {"start_seconds": i, "end_seconds": i+5,
+        messages = [call("observe", {"start_seconds": i, "end_seconds": i+5,
                     "goal": {"type": "general", "target": "action"}}, str(i)) for i in [0, 10]]
         messages += [call("verify_fresh", {}), audit_response(),
                      {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]
@@ -159,10 +162,11 @@ class VerificationWireTests(unittest.TestCase):
         self.assertEqual(len(wire["messages"]), 2)
         self.assertNotIn("response_format", wire)
         self.assertFalse(wire.get("tools"))
+        self.assertEqual(wire["tool_choice"], "none")
         self.assertTrue(all(isinstance(m["content"], str) for m in wire["messages"]))
         payload = json.loads(wire["messages"][1]["content"])
         self.assertEqual(payload["options"], sample("cal").task["options"])
         self.assertIsNone(payload["planner_request"])
         self.assertEqual(result.usage["verification_calls"], 1)
         self.assertFalse(transport.calls[-1].get("tools"))
-        self.assertNotIn("tool_choice", transport.calls[-1])  # Pinned adapter omits it with an empty tool list.
+        self.assertEqual(transport.calls[-1]["tool_choice"], "none")

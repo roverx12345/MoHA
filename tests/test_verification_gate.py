@@ -27,7 +27,7 @@ def audit(status="insufficient", label=None):
 
 
 def observe(index=0):
-    return call("video_player_observe", {"start_seconds": index, "end_seconds": index+2,
+    return call("observe", {"start_seconds": index, "end_seconds": index+2,
                 "goal": {"type": "general", "target": "person action"}}, str(index))
 
 

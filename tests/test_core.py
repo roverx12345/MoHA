@@ -58,7 +58,7 @@ class AccountingTests(unittest.TestCase):
     def test_receipts_are_deduplicated_but_session_ledger_not_multiplied(self):
         receipt = {"receipt_id": "r1", "usage": {"sampled_frames": 10}}
         result = {"observer_execution_receipt": receipt, "backend_result": {"observer_execution_receipt": receipt}}
-        events = [{"kind": "tool_result", "tool": "video_player_observe", "result": result}, {"kind": "planner"}]
+        events = [{"kind": "tool_result", "tool": "observe", "result": result}, {"kind": "planner"}]
         usage = usage_from(events, {"budget_ledger": {"frames_used": 12, "video_tokens_used": 512, "look_used": 2}})
         self.assertEqual(usage["observer_calls"], 1)
         self.assertEqual(usage["sampled_frames"], 12)
@@ -66,7 +66,7 @@ class AccountingTests(unittest.TestCase):
         self.assertEqual(usage["sensory_looks"], 2)
 
     def test_missing_cost_is_unknown(self):
-        usage = usage_from([{"kind": "tool_result", "tool": "video_player_observe", "result": {}}], None)
+        usage = usage_from([{"kind": "tool_result", "tool": "observe", "result": {}}], None)
         self.assertIsNone(usage["observer_calls"])
         self.assertIsNone(usage["video_tokens"])
 

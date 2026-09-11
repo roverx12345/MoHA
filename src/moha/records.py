@@ -45,7 +45,7 @@ def usage_from(events: list[dict], session: dict | None) -> dict:
               "video_tokens": ("video_tokens_used", ("video_tokens", "vision_tokens")),
               "audio_seconds": ("audio_seconds_opened", ("audio_seconds",)),
               "video_seconds": ("video_seconds_opened", ("video_seconds",))}
-    missing_receipt = any(e["kind"] == "tool_result" and e.get("tool") == "video_player_observe"
+    missing_receipt = any(e["kind"] == "tool_result" and e.get("tool") in {"observe", "video_player_observe"}
                           and not e.get("result", {}).get("isError")
                           and not receipts([e]) for e in events)
     if missing_receipt:

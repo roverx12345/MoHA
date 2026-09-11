@@ -72,8 +72,8 @@ def call(name, arguments, id="call"):
 
 
 def script(final=None):
-    return [call("video_player_search", {"query": "jumping person", "top_k": 3}, "search"),
-            call("video_player_observe", {"start_seconds": 10, "end_seconds": 20,
+    return [call("search", {"query": "jumping person", "top_k": 3}, "search"),
+            call("observe", {"start_seconds": 10, "end_seconds": 20,
                                          "goal": {"type": "general", "target": "person action"}}, "observe"),
             {"role": "assistant", "content": json.dumps(final or {"status": "answered", "answer": "A"})}]
 
@@ -92,7 +92,7 @@ class RuntimeTests(unittest.TestCase):
         context = [e for e in result.events if e["kind"] == "context"][-1]
         self.assertEqual(context["visible_observations"][0]["observation_id"], "obs1")
         self.assertNotIn("expected_answer", str(planner.calls))
-        self.assertEqual({x["function"]["name"] for x in planner.calls[0]["tools"]}, {"video_player_search", "video_player_observe"})
+        self.assertEqual({x["function"]["name"] for x in planner.calls[0]["tools"]}, {"search", "observe"})
 
     def test_modules_and_execution_reach_existing_runtime(self):
         from test_verification_gate import audit, final
@@ -115,10 +115,10 @@ class RuntimeTests(unittest.TestCase):
         result = EpisodeRunner(service, planner).run(Harness(), sample("cal"), 0)
         self.assertEqual(result.status, "completed")
         sent = json.loads(planner.calls[-1]["messages"][-2]["content"])
-        self.assertNotIn("observations", sent["player_state"])
+        self.assertNotIn("observations", sent["navigation"])
         self.assertNotIn("observer_execution_receipt", sent)
         self.assertEqual(sent["observation"]["facts"][0]["fact"], "A person jumps.")
-        raw = next(e["result"] for e in result.events if e["kind"] == "tool_result" and e["tool"] == "video_player_observe")
+        raw = next(e["result"] for e in result.events if e["kind"] == "tool_result" and e["tool"] == "observe")
         self.assertIn("observer_execution_receipt", raw)
         self.assertTrue(raw["player_state"]["observations"])
         self.assertNotIn("evidence_memory", planner.calls[-1]["messages"][-1]["content"])
@@ -133,7 +133,7 @@ class RuntimeTests(unittest.TestCase):
         for i in range(5):
             value = envelope("visible fact " + str(i))
             value["player_state"]["observations"] *= 100
-            original.extend([call("video_player_observe", {}, str(i)), message(value, str(i))])
+            original.extend([call("observe", {}, str(i)), message(value, str(i))])
         raw_selected, raw_audit = _planner_history_messages(original, token_limit=6000, max_turns=8)
         selected, audit = _planner_history_messages(planner_messages(original), token_limit=6000, max_turns=8)
         self.assertGreater(audit["history_turns_kept"], raw_audit["history_turns_kept"])
@@ -147,6 +147,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(result.answer)
         self.assertEqual(len(planner.calls), 2)
         self.assertEqual(planner.calls[-1]["tool_choice"], "none")
+        self.assertEqual(planner.calls[-1]["tools"], [])
         self.assertNotIn("observe", [c[0] for c in service.calls])
         terminal = next(e for e in result.events if e["kind"] == "terminal")
         self.assertEqual(terminal["reason"], "tool_calls_on_reserved_final_call")
@@ -182,7 +183,7 @@ class RuntimeTests(unittest.TestCase):
                     uncertainties=["Identity unclear."])
                 result["observation"]["facts"][0]["fact"] = f"Observed action at {index}."
                 return result
-        messages = [call("video_player_observe", {"start_seconds": i, "end_seconds": i + 5,
+        messages = [call("observe", {"start_seconds": i, "end_seconds": i + 5,
                      "goal": {"type": "general", "target": "action"}}, str(i)) for i in range(5)]
         messages.extend([call("memory_read", {"ledger": "result", "source_ids": ["obs0"]}),
                          {"role": "assistant", "content": '{"answer":"A"}'}])
@@ -304,7 +305,7 @@ class WireTests(unittest.TestCase):
             self.assertEqual(len(transport.calls), 3)
             final = transport.calls[-1]
             self.assertEqual(final["tool_choice"], "none")
-            self.assertEqual(len(final["tools"]), 2)
+            self.assertNotIn("tools", final)
             self.assertNotIn("response_format", final)
             self.assertNotIn("chat_template_kwargs", final)
             wires.append([{k: v for k, v in c.items() if k != "model"} for c in transport.calls])
@@ -334,6 +335,7 @@ class WireTests(unittest.TestCase):
         result = EpisodeRunner(Service(), planner).run(Harness(max_steps=3, memory=True), sample("cal"), 0)
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
         self.assertEqual([c["tool_choice"] for c in transport.calls], ["auto", "auto", "none"])
+        self.assertNotIn("tools", transport.calls[-1])
         self.assertIn("memory_ledger", transport.calls[-1]["messages"][-1]["content"])
 
     def test_text_boundary_keeps_video_metadata_in_actual_user_message(self):
