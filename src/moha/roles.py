@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 from .models import canonical, digest
-from .evidence import pack, unpack
+from .evidence import filter_judge_input, unpack
 
 
 FAILURES = ("orientation", "retrieval", "candidate_selection", "goal_specification", "observer",
@@ -46,11 +46,11 @@ numbers permitted by the evidence_steps schema. Event indices, observation numbe
 video timestamps and numbers mentioned inside event text are not step identifiers.
 Return one JSON object conforming exactly to the supplied schema."""
 
-EVIDENCE_PROMPT = """\nInput encoding: data is the payload; shared stores repeated JSON containers.
-A sole {'$ref': 'shared_N'} means read that shared entry. A $literal wrapper
-escapes literal reference-shaped data. These references only deduplicate storage.
-Message content marked decoded_json is the complete parsed JSON body; text is unchanged.
-Context messages are what the planner actually received, in their original order.
+EVIDENCE_PROMPT = """\nInput is ordinary JSON with execution/accounting fields omitted.
+Message content marked decoded_json was parsed as JSON; retained text is unchanged.
+Each context's visible_observations records the observations actually visible on that call.
+Repeated context messages are omitted when that visibility record is present.
+Planner events retain the messages the planner returned, in their original order.
 Do not infer hidden reasoning, use of uncited evidence, or facts from missing records.
 Treat observation claims as fallible; the reference answer is not visual ground truth.
 Later or more local observations are not automatically corrections. Check their
@@ -137,6 +137,7 @@ class StructuredRole:
         self.client = client
 
     def ask(self, name, prompt, schema, payload, validate):
+        payload = filter_judge_input(payload)
         # Include the exact schema in the prompt even when the endpoint is
         # configured for json_text/json_object rather than native json_schema.
         control = prompt + "\nOUTPUT JSON SCHEMA:\n" + canonical(schema)
@@ -185,7 +186,7 @@ class Judge(StructuredRole):
             if result["failure"] in {"observer", "unresolved"} and result["candidate_id"] is not None:
                 raise ValueError("observer proposals await probes; unresolved failures must abstain")
 
-        return self.ask("moha_diagnosis", JUDGE_PROMPT + PROPOSAL_PROMPT, schema, pack(value), validate)
+        return self.ask("moha_diagnosis", JUDGE_PROMPT + PROPOSAL_PROMPT, schema, value, validate)
 
     def recommend(self, payload, diagnosis, available):
         """Finalize one observer trace's proposal after its counterfactual probes."""
@@ -219,7 +220,7 @@ class Judge(StructuredRole):
                   "Return candidate_id and proposal_reason using the exact schema. "
                   "Only available interventions may be proposed; never request held-out data."
                   + EVIDENCE_PROMPT)
-        return self.ask("moha_observer_recommendation", prompt, schema, pack(value), validate)
+        return self.ask("moha_observer_recommendation", prompt, schema, value, validate)
 
 
 def rank_candidates(diagnoses, available):

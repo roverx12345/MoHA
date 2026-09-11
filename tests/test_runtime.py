@@ -345,12 +345,12 @@ class WireTests(unittest.TestCase):
 
     def test_text_boundary_keeps_video_metadata_in_actual_user_message(self):
         from flat.core.dispatch import sanitize_gpt_text_payload
-        from moha.evidence import messages_view, pack, unpack
+        from moha.evidence import messages_view
         content = json.dumps({"initial": {"media": {"duration_seconds": 132.655599,
                              "has_audio": True}}, "task": {"question": "What happens last?"}})
         messages = [{"role": "user", "content": content}]
-        payload = pack({"messages": messages_view(messages), "tool_result": {"artifact_id": "raw-media-handle"}})
-        sent = unpack(sanitize_gpt_text_payload(payload))
+        payload = {"messages": messages_view(messages), "tool_result": {"artifact_id": "raw-media-handle"}}
+        sent = sanitize_gpt_text_payload(payload)
         self.assertEqual(sent["messages"][0]["content"], content)
         self.assertEqual(json.loads(sent["messages"][0]["content"])["initial"]["media"]["duration_seconds"], 132.655599)
         self.assertNotIn("artifact_id", sent["tool_result"])

@@ -209,10 +209,18 @@ class ProbeTests(unittest.TestCase):
 
     def test_fixed_request_fresh_control_and_alternative_rescue(self):
         runner = FakeProbe()
-        result = self.resolve(runner, FakeClient({"baseline_supports_goal": False, "alternative_supports_goal": True, "reason": "required action recovered"}))
+        client = FakeClient({"baseline_supports_goal": False, "alternative_supports_goal": True,
+                             "reason": "required action recovered"})
+        result = self.resolve(runner, client)
         self.assertEqual(result["status"], "execution_rescue")
         self.assertEqual([c[2] for c in runner.calls], ["baseline", "observer.execution.general.priority.spatial"])
         self.assertEqual(runner.calls[0][1], runner.calls[1][1])
+        sent = client.requests[0]["payload"]["baseline"]["observer_execution_receipt"]
+        self.assertEqual(sent["window"], [10, 20])
+        self.assertEqual(sent["realized_execution"]["frame_timestamps_seconds"], list(range(10, 20)))
+        self.assertNotIn("sampled_frames", sent["realized_execution"])
+        self.assertNotIn("source_sha256", sent["realized_execution"])
+        self.assertEqual(result["probes"][0]["result"]["observer_execution_receipt"]["realized_execution"]["sampled_frames"], 10)
 
     def test_baseline_also_recovers_not_execution_rescue(self):
         result = self.resolve(FakeProbe(), FakeClient({"baseline_supports_goal": True, "alternative_supports_goal": True, "reason": "both have evidence"}))

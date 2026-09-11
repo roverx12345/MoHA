@@ -249,12 +249,12 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 ## Judge 的证据
 
-`evidence.py` 是唯一的完整轨迹投影入口，不改变 benchmark 时的 planner 行为。
+`evidence.py` 是 Judge 轨迹输入的唯一过滤入口，不改变 benchmark 时的 planner 行为。
 
-- Judge 收到题目/校准答案、当前 harness、工具 schema、初始消息、每步真实可见消息、planner 已返回的文本、工具结果、用量和当前候选。缺失的历史记录明确标为缺失。
+- Judge 收到题目/校准答案、当前 harness、工具 schema、初始消息、每步 `visible_observations` 原文、planner 已返回的文本、工具结果和当前候选。已有可见观察记录的 context 直接删除累计重复的 `messages`；缺少该记录时保留原消息。缺失的历史记录明确标为缺失。
 - 工具与 assistant 的 JSON 正文解析成完整对象，system/user 消息及非 JSON 文本保持原文，保留初始视频时长等元数据；不生成模型未返回的推理。不同时间出现的同一 observation 的不同内容不会按 ID 强行合并。底层文本接口继续过滤原始工具结果中的媒体句柄，不向文本模型传递视频或音频文件。
-- 重复 JSON 容器通过 `shared` 表引用。`unpack` 可还原完整语义数据；该结构只是存储去重，没有推断因果边。
-- observer 的最终提案同时看到完整单条 trace、实际 probe 输出及判定理由；没有跨样本代表 trace packet，也不把 validation/test 的样本、标签、轨迹或分数传给 Judge。
+- Judge 请求使用普通 JSON，不再生成 `shared/$ref`。`filter_judge_input` 只按固定字段清单删除用量、帧数计数、token/像素统计、渲染分配、内部标识及 probe 预计算日志；保留观察原文、冲突、时间范围、实际采样时间点/FPS/分辨率/截断信息、预算结束原因与历史移除事实。没有摘要、重排、合并、编号替换或新增模型调用。初次诊断、probe 判定和最终局部提案共用这一删除入口，原始 episode/probe 日志不变。
+- observer 的最终提案同时看到按上述规则过滤的单条 trace、实际 probe 输出及判定理由；没有跨样本代表 trace packet，也不把 validation/test 的样本、标签、轨迹或分数传给 Judge。
 - 较新的观察不自动覆盖旧观察；已纠正的错误仍可能消耗预算。冲突不自动判给 planner，也不自动启用 verification。`verification_basic` 一旦启用，就按提交前或两次调用下限自动触发一次复核，不依赖 planner 主动调用。
 
 论文方法部分需与此实现一致：将“诊断不提出修复、全局 selector 选择”的描述改为局部候选推荐、等权支持聚合和验证。固定 H0、离散单坐标 catalog、observer probe 与验证门限保持原定义。

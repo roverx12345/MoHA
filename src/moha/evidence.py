@@ -1,50 +1,49 @@
-"""Calibration evidence views. References deduplicate data, not causal claims."""
+"""Calibration evidence views; Judge input filtering only deletes fields."""
 from __future__ import annotations
 import copy
 import json
-from collections import Counter
-from .models import canonical, digest
 
 
-def pack(value):
-    """Losslessly share repeated JSON containers, keeping unique content inline."""
-    counts, sizes = Counter(), {}
+# These are execution/accounting fields, never observation text. Keep the full
+# originals in episode/probe artifacts. No summaries, references or value rewrites.
+JUDGE_OMIT_FIELDS = frozenset({
+    "usage", "provider_totals", "input_token_accounting", "sensory_budget",
+    "budget_after", "allocation", "packing", "execution_profile", "presentation",
+    "planner_geometry", "experiment_render", "observer_experiment", "interface_metrics",
+    "source_sha256", "render_config_sha256", "renderer_version", "session_id",
+    "receipt_id", "receipt_version", "raw_output_sha256",
+    "sampled_frames", "frame_count", "base_requested_frames", "requested_frames",
+    "target_frames", "realized_frames", "frames_used", "frame_episode_advisory_limit",
+    "frames_over_episode_advisory", "decoded_pixels_used",
+    "video_tokens", "video_tokens_used", "video_token_episode_advisory_limit",
+    "video_tokens_over_episode_advisory", "history_tokens", "history_token_limit",
+    "full_message_count", "message_count", "projection", "preflight",
+})
 
-    def count(item):
-        if isinstance(item, (dict, list)):
-            key = digest(item)
-            counts[key] += 1
-            sizes[key] = len(canonical(item).encode())
-            for child in item.values() if isinstance(item, dict) else item:
-                count(child)
-    count(value)
-    shared, ids = {}, {}
 
-    def encode(item):
-        if not isinstance(item, (dict, list)):
-            return item
-        key = digest(item)
-        reusable = counts[key] > 1 and sizes[key] >= 512
-        if reusable and key in ids:
-            return {"$ref": ids[key]}
-        if isinstance(item, dict):
-            encoded = {k: encode(v) for k, v in item.items()}
-            # Escape literal reference-shaped data so expansion is unambiguous.
-            if set(encoded) in ({"$ref"}, {"$literal"}):
-                encoded = {"$literal": encoded}
-        else:
-            encoded = [encode(v) for v in item]
-        if reusable:
-            ref = f"shared_{len(ids) + 1}"
-            ids[key] = ref
-            shared[ref] = encoded
-            return {"$ref": ref}
-        return encoded
-    data = encode(value)
-    return {"encoding": "shared_json", "data": data, "shared": shared}
+def filter_judge_input(value):
+    """Return the same tree with audit fields and repeated context dialogue removed."""
+    if isinstance(value, list):
+        return [filter_judge_input(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    # Arbitrary model/user text and semantic evidence may use the same field names.
+    if value.get("role") in ("system", "user", "assistant"):
+        return copy.deepcopy(value)
+    protected = {"task", "arguments", "goal", "instruction", "reference", "observation",
+                 "visible_observations", "facts", "uncertainties", "missing",
+                 "requested_refinement", "tool_schemas", "tools", "harness", "available"}
+    omitted = JUDGE_OMIT_FIELDS
+    # Use the existing per-call visibility record verbatim. Older incomplete
+    # records without that field must keep their messages as visibility evidence.
+    if value.get("kind") == "context" and "visible_observations" in value:
+        omitted = omitted | {"messages"}
+    return {key: copy.deepcopy(item) if key in protected else filter_judge_input(item)
+            for key, item in value.items() if key not in omitted}
 
 
 def unpack(payload):
+    """Read historical shared-json inputs; new requests are ordinary JSON."""
     if payload.get("encoding") != "shared_json":
         return payload
     def expand(item):
@@ -101,7 +100,7 @@ def diagnosis_view(episode, sample, harness):
         events.append(item)
     raw = episode.raw
     recoveries = raw.get("perception_receipt", {}).get("observer_output_recoveries", [])
-    return pack({"sample_id": sample.sample_id, "task": sample.task,
+    return {"sample_id": sample.sample_id, "task": sample.task,
         "expected_answer": sample.expected_answer, "answer": episode.answer, "status": episode.status,
         "harness": harness.to_dict(), "usage": episode.usage,
         "initial_messages": messages_view(raw.get("messages", [])[:2]),
@@ -111,4 +110,4 @@ def diagnosis_view(episode, sample, harness):
             "tool_schemas_missing": not bool(raw.get("tool_schemas")),
             "initial_messages_missing": not bool(raw.get("messages")),
             "context_steps_without_messages": [e["step"] for e in episode.events
-                if e["kind"] == "context" and "messages" not in e]}})
+                if e["kind"] == "context" and "messages" not in e]}}
