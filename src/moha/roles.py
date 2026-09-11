@@ -17,7 +17,7 @@ def object_schema(properties):
 DIAGNOSIS_SCHEMA = object_schema({
     "failure": {"type": "string", "enum": list(FAILURES)},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-    "reason": {"type": "string"},
+    "reason": {"type": "string", "minLength": 1},
     "evidence_steps": {"type": "array", "items": {"type": "integer", "minimum": 0}},
     "failed_capability": {"type": ["string", "null"], "enum": ["ocr", "asr", None]},
     "residual_reason": {"type": "string"},
@@ -41,7 +41,9 @@ failure. Use unresolved if the cause is output validity alone; do not propose a
 semantic capability intervention without independent evidence supporting it.
 Use unresolved and explain residual_reason when these categories do not explain
 the trace. Set failed_capability to ocr/asr only for an observer failure with a
-corresponding typed request in the trace, otherwise null. Cite existing step numbers.
+corresponding typed request in the trace, otherwise null. Cite only the event.step
+numbers permitted by the evidence_steps schema. Event indices, observation numbers,
+video timestamps and numbers mentioned inside event text are not step identifiers.
 Return one JSON object conforming exactly to the supplied schema."""
 
 EVIDENCE_PROMPT = """\nInput encoding: data is the payload; shared stores repeated JSON containers.
@@ -61,7 +63,9 @@ JUDGE_PROMPT += EVIDENCE_PROMPT
 
 PROPOSAL_PROMPT = """\nRecommend at most one intervention from available, or candidate_id null.
 Explain the trace evidence and why this concrete intervention could help in
-proposal_reason. Diagnosis is a hypothesis, not proof of repair effectiveness;
+proposal_reason. This field must contain a nonempty explanation, including when
+candidate_id is null: explain why no intervention is proposed or why probes must
+come first. Never leave proposal_reason empty. Diagnosis is a hypothesis, not proof of repair effectiveness;
 never map a failure label mechanically to a module. Confidence describes the
 attribution only and is not a vote weight. Each trace has at most one equal vote.
 Use null for unresolved failures, insufficient evidence or no suitable intervention.
@@ -76,7 +80,7 @@ final recommendation. No validation or test samples are provided or requested.""
 def proposal_schema(available):
     return object_schema({
         "candidate_id": {"type": ["string", "null"], "enum": [c.id for c in available] + [None]},
-        "proposal_reason": {"type": "string"},
+        "proposal_reason": {"type": "string", "minLength": 1},
     })
 
 
@@ -161,8 +165,15 @@ class StructuredRole:
 class Judge(StructuredRole):
     def diagnose(self, payload, available):
         available = [c for c in available if c.coordinate != "specialists" and not c.coordinate.startswith("execution.")]
-        schema = object_schema({**DIAGNOSIS_SCHEMA["properties"], **proposal_schema(available)["properties"]})
         value = {**unpack(payload), "available": [c.to_dict() for c in available]}
+        known_steps = sorted({e["step"] for e in value["events"]
+                              if type(e.get("step")) is int and e["step"] >= 0})
+        # Expose the same constraints the validator already applies. The model
+        # must choose recorded step identifiers, not guess from nested text.
+        steps_schema = ({"type": "array", "items": {"type": "integer", "enum": known_steps}}
+                        if known_steps else {**DIAGNOSIS_SCHEMA["properties"]["evidence_steps"], "maxItems": 0})
+        schema = object_schema({**DIAGNOSIS_SCHEMA["properties"], "evidence_steps": steps_schema,
+                                **proposal_schema(available)["properties"]})
 
         def validate(result, request):
             if not isinstance(result, dict) or set(result) != set(schema["properties"]):

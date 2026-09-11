@@ -204,6 +204,7 @@ MOHA_WHISPER_GPU=1 bash scripts/serve_whisper.sh > /path/outside/repo/whisper.lo
 perception calibration。没有全局 LLM selector，也不接受 `models.selector` 配置。
 
 1. Judge 读取每条失败 calibration trace，同时给出归因、证据步骤、`candidate_id` 和 `proposal_reason`。候选只能来自当前可执行 catalog，或为 `null`。`confidence` 仅表示归因置信度，不参与计票；没有失败标签到模块的硬编码映射。
+   输出 schema 明确要求非空理由（包括 `candidate_id=null`），并枚举当前 trace 可引用的 `event.step`，避免把事件索引、观察编号或视频秒数当作步骤。格式修复仍最多一次；原始错误输出保留，计票和诊断质量门槛不变。修改 Judge 提示或 schema 后使用新运行并重新生成诊断；经核验的 H0 episode 可记录来源后复用。
 2. 若归因为 observer，首次提案必须为 `null`。涉及可用 OCR/ASR 时，先在同一窗口、目标、observer 下做执行设置 probe，再让同一个 Judge 完成局部提案；只有匹配 text/speech 目标的 `no_rescue` 才开放对应 specialist。启用最终阶段时，其他 observer 执行偏好留到九组直接评估；未启用时仍按 probe 支持的具体执行候选提案。probe 不确定时不能据此宣称能力缺失。
 3. 每条有效失败 trace 最多一票。按支持样本数降序排序，同票按完整 candidate ID 的字典序排列。`unresolved`、弃权、错误以及不再合法的提案不投票。
 4. 每轮冻结一次提案集合。在预设候选预算内依次验证排名最高的候选；拒绝后移除它，使用原票数的下一名，不要求 Judge 改投。成功后更新 harness，并在下一轮产生新的 trace 和提案。已启用、无实际作用及此前被拒绝的候选不再参与。

@@ -63,6 +63,37 @@ class RoleTests(unittest.TestCase):
         client = FakeClient(diagnosis(evidence_steps=[999]), diagnosis(evidence_steps=[999]))
         self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
 
+    def test_schema_distinguishes_recorded_steps_from_event_indices(self):
+        trace = payload()
+        trace["events"][0]["index"] = 900
+        trace["events"] += [{"kind": "planner", "step": 7, "index": 901},
+                            {"kind": "context", "step": 2}, {"kind": "metadata"}]
+        client = FakeClient(diagnosis(evidence_steps=[900]), diagnosis(evidence_steps=[2]))
+        result = Judge(client).diagnose(trace, list(catalog().values()))
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual(client.requests[0]["schema"]["properties"]["evidence_steps"]["items"]["enum"], [2, 7])
+        self.assertEqual(client.requests[0]["schema"], client.requests[1]["schema"])
+        self.assertEqual(result["attempts"][0]["output"]["evidence_steps"], [900])
+        self.assertEqual(result["evidence_steps"], [2])
+
+    def test_null_proposal_reason_is_required_on_wire_and_not_fabricated(self):
+        client = FakeClient(diagnosis(proposal_reason=""), diagnosis(proposal_reason="Probes must come first."))
+        result = Judge(client).diagnose(payload(), list(catalog().values()))
+        self.assertEqual(result["status"], "valid")
+        self.assertIsNone(result["candidate_id"])
+        self.assertEqual(result["proposal_reason"], "Probes must come first.")
+        self.assertEqual(result["attempts"][0]["output"]["proposal_reason"], "")
+        self.assertEqual(client.requests[0]["schema"]["properties"]["proposal_reason"]["minLength"], 1)
+        self.assertIn("candidate_id is null", client.requests[0]["prompt"])
+        invalid = diagnosis(proposal_reason=" ")
+        self.assertEqual(Judge(FakeClient(invalid, invalid)).diagnose(payload(), list(catalog().values()))["status"], "error")
+
+    def test_no_recorded_steps_allows_only_empty_citations(self):
+        client = FakeClient(diagnosis(failure="unresolved", evidence_steps=[], residual_reason="No trace evidence."))
+        result = Judge(client).diagnose({"events": []}, list(catalog().values()))
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual(client.requests[0]["schema"]["properties"]["evidence_steps"]["maxItems"], 0)
+
     def test_capability_needs_corresponding_typed_request(self):
         client = FakeClient(diagnosis(failed_capability="asr"), diagnosis(failed_capability="asr"))
         self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
