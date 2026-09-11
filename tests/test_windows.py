@@ -13,9 +13,14 @@ GOAL = {"type": "sequence", "target": "what happens before and after the action"
 ANSWER = {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}
 
 
+def instruction_args(goal):
+    return {"instruction": goal["target"], "evidence_type": goal["type"],
+            **({"reference": goal["reference"]} if "reference" in goal else {})}
+
+
 def observe(start, end, goal=None):
     return call("observe", {"start_seconds": start, "end_seconds": end,
-                                         "goal": goal or GOAL})
+                                         **instruction_args(goal or GOAL)})
 
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires the pinned Video OS runtime")
@@ -48,11 +53,15 @@ class WindowTests(unittest.TestCase):
         sent = json.loads(planner.calls[-1]["messages"][-2]["content"])
         self.assertEqual(sent["observation_context"]["window"], [5, 35])
         self.assertNotIn("candidate_id", sent["observation_context"])
+        self.assertEqual(sent["observation_context"]["instruction"], GOAL["target"])
+        self.assertEqual(sent["observation_context"]["evidence_type"], GOAL["type"])
+        self.assertNotIn("goal", sent["observation_context"])
+        self.assertIn(GOAL["target"], wire["inspection_goal"])
         schemas = {s["function"]["name"]: s["function"] for s in planner.calls[0]["tools"]}
         self.assertEqual(set(schemas), {"search", "observe"})
         parameters = schemas["observe"]["parameters"]
-        self.assertEqual(set(parameters["properties"]), {"start_seconds", "end_seconds", "goal"})
-        self.assertEqual(set(parameters["required"]), set(parameters["properties"]))
+        self.assertEqual(set(parameters["properties"]), {"start_seconds", "end_seconds", "instruction", "evidence_type", "reference"})
+        self.assertEqual(set(parameters["required"]), set(parameters["properties"]) - {"reference"})
         self.assertFalse(parameters["additionalProperties"])
 
     def test_search_candidate_can_be_expanded_or_left_for_another_region(self):
@@ -84,16 +93,18 @@ class WindowTests(unittest.TestCase):
 
     def test_invalid_windows_or_controls_leave_state_and_backend_unchanged(self):
         registry, service = self.registry()
-        invalid = [{"start_seconds": a, "end_seconds": b, "goal": GOAL}
+        invalid = [{"start_seconds": a, "end_seconds": b, **instruction_args(GOAL)}
                    for a, b in [(-1, 5), (5, 5), (6, 5), (0, 61), (True, 5),
                                 (0, "5"), (float("nan"), 5), (0, float("inf"))]]
-        valid = {"start_seconds": 5, "end_seconds": 35, "goal": GOAL}
+        valid = {"start_seconds": 5, "end_seconds": 35, **instruction_args(GOAL)}
         invalid += [{**valid, key: value} for key, value in
                     [("fps", 8), ("resolution", 768), ("observer", "other"),
                      ("candidate_id", "s1_c1"), ("sampling_policy", "dense")]]
-        invalid += [{"candidate_id": "s1_c1", "goal": GOAL},
-                    {"start_seconds": 0, "goal": GOAL}, {**valid, "goal": None},
-                    {**valid, "goal": {**GOAL, "reference": "invalid for sequence"}}]
+        invalid += [{"candidate_id": "s1_c1", **instruction_args(GOAL)},
+                    {"start_seconds": 0, **instruction_args(GOAL)}, {**valid, "instruction": None}, {**valid, "instruction": " "},
+                    {**valid, "instruction": "x" * 513}, {**valid, "evidence_type": "invalid"},
+                    {**valid, "goal": GOAL},
+                    {**valid, "reference": "invalid for sequence"}]
         before = copy.deepcopy(registry.snapshot())
         calls = copy.deepcopy(service.calls)
         for arguments in invalid:
@@ -104,7 +115,7 @@ class WindowTests(unittest.TestCase):
 
     def test_wrong_session_and_unexposed_tools_cannot_bypass_window_contract(self):
         registry, service = self.registry()
-        args = {"start_seconds": 0, "end_seconds": 10, "goal": GOAL}
+        args = {"start_seconds": 0, "end_seconds": 10, **instruction_args(GOAL)}
         with self.assertRaises(PermissionError):
             registry.invoke("observe", args, session_id="another")
         with self.assertRaises(ValueError):

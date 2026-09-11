@@ -124,9 +124,11 @@ def validate_diagnosis(value, payload):
     capability = value["failed_capability"]
     if capability is not None:
         goal_type = {"ocr": "text", "asr": "speech"}[capability]
-        goals = [e.get("arguments", {}).get("goal", {}) for e in payload["events"]
+        requests = [e["arguments"] for e in payload["events"]
                  if e.get("kind") == "tool_call" and isinstance(e.get("arguments"), dict)]
-        if value["failure"] != "observer" or not any(isinstance(g, dict) and g.get("type") == goal_type for g in goals):
+        types = [a.get("evidence_type", (a.get("goal") or {}).get("type"))
+                 for a in requests if isinstance(a.get("goal", {}), dict)]
+        if value["failure"] != "observer" or goal_type not in types:
             raise ValueError("capability attribution lacks a corresponding typed observer request")
 
 

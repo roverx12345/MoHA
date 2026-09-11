@@ -5,12 +5,12 @@ import json
 from .models import canonical
 
 
-PLANNER_CONTEXT_POLICY = "moha_planner_context_v3"
+PLANNER_CONTEXT_POLICY = "moha_planner_context_v4"
 STATE_FIELDS = ("player_state", "navigation")
 HISTORY_NOTICE = (
     "\n\n[Context note] Some earlier planner/tool turns were omitted. Use the "
     "retained observations and explicit evidence memory, if supplied. Each "
-    "observation is scoped to its window and goal; missing evidence within that "
+    "observation is scoped to its window and instruction; missing evidence within that "
     "view does not establish absence across the video. Latest navigation state "
     "records the current and previously inspected windows. Newer observations do not "
     "automatically override earlier or conflicting evidence."
@@ -58,12 +58,18 @@ def tool_context(result, *, keep_state=True):
     if isinstance(result.get("additional_results"), list):
         value.setdefault("additional_results", []).extend(copy.deepcopy(result["additional_results"]))
 
-    scope = fields(result.get("observation_context", {}), ("window", "goal", "sampling"))
+    scope = fields(result.get("observation_context", {}),
+                   ("window", "goal", "instruction", "evidence_type", "reference", "sampling"))
     receipt = result.get("observer_execution_receipt")
     if isinstance(receipt, dict):
         scope.update(fields(receipt, ("window", "goal")))
         scope["sampling"] = fields(receipt.get("realized_execution", {}),
                                    ("fps", "resolution", "sampled_frames", "modalities"))
+    goal = scope.pop("goal", None)
+    if isinstance(goal, dict):
+        scope.update({public: copy.deepcopy(goal[internal])
+                      for public, internal in (("instruction", "target"), ("evidence_type", "type"),
+                                               ("reference", "reference")) if internal in goal})
     view = result.get("view", {})
     if isinstance(view, dict) and isinstance(value.get("observation"), dict):
         if "window" not in scope and "time_range_seconds" in view:

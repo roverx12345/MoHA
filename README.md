@@ -93,11 +93,12 @@ PYTHONPATH=src python -m moha demo --output /tmp/moha-demo
 
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
-Planner 用 `observe(start_seconds, end_seconds, goal)` 直接选择源视频时间范围。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
+Planner 用 `observe(start_seconds, end_seconds, instruction, evidence_type)` 直接选择源视频时间范围，并给 Observer 一条具体指令或问题。`instruction` 写明观察对象和需要报告的可见／可听事实，必要时要求时间、顺序和不确定性；`evidence_type` 保留现有证据类型和路由，`reference` 仅在 `relation` 时可选。内部 Flat 记录仍以原有 goal 结构保存，供回执和固定支持探针使用。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
 
 ```json
 {"start_seconds": 95, "end_seconds": 120,
- "goal": {"type": "sequence", "target": "Describe the events before and after the object falls."}}
+ "instruction": "Describe the visible events before and after the object falls, in order, with their times. State any unclear details.",
+ "evidence_type": "sequence"}
 ```
 
 接口要求有限数值且 `0 <= start_seconds < end_seconds <= duration_seconds`；非法范围返回工具错误供 planner 修正，不静默移动、扩大、裁剪或取整窗口。帧率、分辨率、采样及 observer/specialist 路由仍由 harness 和固定 Flat 执行层决定，原有媒体与预算约束继续生效。

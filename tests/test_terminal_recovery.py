@@ -40,7 +40,7 @@ class TerminalRecoveryTests(unittest.TestCase):
         planner = Planner([
             {"role": "assistant", "content": "I need to inspect the scene before deciding."},
             call("observe", {"start_seconds": 10, "end_seconds": 20,
-                 "goal": {"type": "general", "target": "person action"}}),
+                 "instruction": 'person action', "evidence_type": 'general'}),
             copy.deepcopy(FINAL),
         ])
         service = Service()

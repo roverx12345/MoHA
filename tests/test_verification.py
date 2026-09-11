@@ -61,7 +61,7 @@ class NativeVerificationTests(unittest.TestCase):
     def test_observe_note_diagnose_final_uses_shared_budget_and_returns_raw_text(self):
         text = audit_response()["content"]
         messages = [call("observe", {"start_seconds": 10, "end_seconds": 20,
-            "goal": {"type": "general", "target": "GOAL_SENTINEL"}}),
+            "instruction": 'GOAL_SENTINEL', "evidence_type": 'general'}),
             call("memory_note", {"text": "WORKING_SENTINEL"}),
             call("verify_fresh", {"diagnostic_question": "What remains uncertain?"}),
             {"role": "assistant", "content": text},
@@ -90,7 +90,7 @@ class NativeVerificationTests(unittest.TestCase):
 
     def test_budget_floor_audit_preserves_reserved_final_call(self):
         planner = Planner([call("observe", {"start_seconds": 10, "end_seconds": 20,
-            "goal": {"type": "general", "target": "action"}}), audit_response(),
+            "instruction": 'action', "evidence_type": 'general'}), audit_response(),
             {"role": "assistant", "content": '{"status":"abstained","answer":null}'}])
         result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
         self.assertEqual(result.status, "abstained", result.raw)
@@ -109,7 +109,7 @@ class NativeVerificationTests(unittest.TestCase):
                 r["observation"]["facts"][0]["fact"] = f"Evidence {t}"
                 return r
         messages = [call("observe", {"start_seconds": i, "end_seconds": i+5,
-                    "goal": {"type": "general", "target": "action"}}, str(i)) for i in [0, 10]]
+                    "instruction": 'action', "evidence_type": 'general'}, str(i)) for i in [0, 10]]
         messages += [call("verify_fresh", {}), audit_response(),
                      {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]
         for enabled in [False, True]:

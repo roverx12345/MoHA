@@ -13,7 +13,7 @@
 - Keep two Flat tools, plus module tools only when enabled: memory_read /
   memory_note for memory and verify_fresh for verification. The user authorized
   these native module tools in place of the separate MCP experiment.
-  `observe(start_seconds, end_seconds, goal)` selects
+  `observe(start_seconds, end_seconds, instruction, evidence_type, reference?)` selects
   exact valid source-time support, independent of search candidate IDs. Planner
   controls temporal scope; harness controls sampling and observer routing. Keep
   the thin window adapter in `tools.py`, reusing the pinned execution path.

@@ -45,6 +45,10 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(result["navigation"]["visited_windows"], [[10, 12]])
         self.assertEqual(result["observation_context"]["sampling"]["sampled_frames"], 2)
         self.assertEqual(result["observation_context"]["sampling"]["frame_timestamps_seconds"], [10, 11])
+        self.assertEqual(result["observation_context"]["instruction"], "car")
+        self.assertEqual(result["observation_context"]["evidence_type"], "attribute")
+        self.assertNotIn("goal", result["observation_context"])
+        self.assertEqual(tool_context(result), result)
         self.assertEqual(result["evidence"], {"claim": "Other claim"})
         for key in ("result", "budget", "state", "player_state"):
             self.assertNotIn(key, result)

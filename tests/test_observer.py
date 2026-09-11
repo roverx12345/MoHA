@@ -187,7 +187,7 @@ class ObserverTests(unittest.TestCase):
         service, transport = self.service([response("TRUNCATED_BAD_FACT", finish="length"),
             response("TRUNCATED_BAD_FACT", finish="length"), response()])
         observe = call("observe", {"start_seconds": 1, "end_seconds": 2.5,
-            "goal": {"type": "sequence", "target": "pattern changes"}})
+            "instruction": 'pattern changes', "evidence_type": 'sequence'})
         planner = Planner([observe, observe, ANSWER])
         episode = EpisodeRunner(service, planner).run(Harness(memory=True), sample("unit"), 0)
         self.assertEqual(episode.status, "completed", episode.raw)
@@ -229,7 +229,7 @@ class ObserverTests(unittest.TestCase):
     def test_probe_unusable_output_is_inconclusive_and_does_not_offer_a_rescue(self):
         from moha.probes import ObserverResolver, ProbeRunner
         observe = call("observe", {"start_seconds": 1, "end_seconds": 2.5,
-            "goal": {"type": "sequence", "target": "pattern changes"}})
+            "instruction": 'pattern changes', "evidence_type": 'sequence'})
         original_service, _ = self.service([response()])
         episode = EpisodeRunner(original_service, Planner([observe, ANSWER])).run(Harness(), sample("unit"), 0)
         service, transport = self.service([response("{"), response("{")])

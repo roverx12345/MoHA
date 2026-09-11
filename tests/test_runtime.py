@@ -74,7 +74,7 @@ def call(name, arguments, id="call"):
 def script(final=None):
     return [call("search", {"query": "jumping person", "top_k": 3}, "search"),
             call("observe", {"start_seconds": 10, "end_seconds": 20,
-                                         "goal": {"type": "general", "target": "person action"}}, "observe"),
+                                         "instruction": 'person action', "evidence_type": 'general'}, "observe"),
             {"role": "assistant", "content": json.dumps(final or {"status": "answered", "answer": "A"})}]
 
 
@@ -184,7 +184,7 @@ class RuntimeTests(unittest.TestCase):
                 result["observation"]["facts"][0]["fact"] = f"Observed action at {index}."
                 return result
         messages = [call("observe", {"start_seconds": i, "end_seconds": i + 5,
-                     "goal": {"type": "general", "target": "action"}}, str(i)) for i in range(5)]
+                     "instruction": 'action', "evidence_type": 'general'}, str(i)) for i in range(5)]
         messages.extend([call("memory_read", {"ledger": "result", "source_ids": ["obs0"]}),
                          {"role": "assistant", "content": '{"answer":"A"}'}])
         planner = Planner(messages)
@@ -245,7 +245,7 @@ class RuntimeTests(unittest.TestCase):
     def test_invalid_tool_request_is_feedback_not_semantic_rewrite(self):
         messages = script()
         arguments = json.loads(messages[1]["tool_calls"][0]["function"]["arguments"])
-        arguments["goal"]["reference"] = "invalid nonrelation reference"
+        arguments["reference"] = "invalid nonrelation reference"
         messages[1]["tool_calls"][0]["function"]["arguments"] = json.dumps(arguments)
         service, planner = Service(), Planner(messages)
         result = EpisodeRunner(service, planner).run(Harness(), sample("cal"), 0)

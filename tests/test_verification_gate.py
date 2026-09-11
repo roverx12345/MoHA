@@ -28,7 +28,7 @@ def audit(status="insufficient", label=None):
 
 def observe(index=0):
     return call("observe", {"start_seconds": index, "end_seconds": index+2,
-                "goal": {"type": "general", "target": "person action"}}, str(index))
+                "instruction": 'person action', "evidence_type": 'general'}, str(index))
 
 
 class AuditContractTests(unittest.TestCase):

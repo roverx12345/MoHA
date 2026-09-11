@@ -7,11 +7,11 @@ from .models import Harness
 from .observer import PolicyExecution, PolicyObserverRegistry
 
 
-PLANNER_TOOL_POLICY = "moha_semantic_windows_v2"
+PLANNER_TOOL_POLICY = "moha_observation_instructions_v3"
 
 
 class WindowPlayerRegistry(VideoPlayerRegistry):
-    """Keep search and typed observe; the planner owns the temporal support."""
+    """Keep search and instructed observe; the planner owns temporal support."""
 
     def __init__(self, backend, *, harness=None, **kwargs):
         self.moha_harness = harness or Harness()
@@ -49,7 +49,7 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
             elif function["name"] == "video_player_observe":
                 function["name"] = "observe"
                 function["description"] = (
-                    "Observe a source-time window for one typed evidence goal. Choose its "
+                    "Give the observer a concrete instruction or question about a source-time window. Choose its "
                     "start and end directly; search is optional and its candidate windows "
                     "may be expanded to include preceding or following events. The harness "
                     "controls frame rate, resolution, sampling and observer routing. Require "
@@ -57,15 +57,22 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
                 )
                 parameters = function["parameters"]
                 goal = parameters["properties"]["goal"]
-                goal["description"] = "Typed evidence demand for the selected source-time window."
                 parameters["properties"] = {
                     "start_seconds": {"type": "number", "minimum": 0,
                                       "description": "Window start in seconds from the video start."},
                     "end_seconds": {"type": "number", "minimum": 0,
                                     "description": "Window end in source seconds, at most the video duration."},
-                    "goal": goal,
+                    "instruction": {**goal["properties"]["target"], "description":
+                        "A direct instruction or question for the observer: specify what to inspect "
+                        "and which visible or audible facts to report. Request timing or order when "
+                        "relevant, and uncertainty when evidence is unclear. Do not ask it to infer "
+                        "unobservable intentions or choose the overall task answer."},
+                    "evidence_type": {**goal["properties"]["type"], "description":
+                        "Kind of evidence requested; the harness uses this for observer routing."},
+                    "reference": {**goal["properties"]["reference"], "description":
+                        "Optional comparison reference, valid only for evidence_type='relation'."},
                 }
-                parameters["required"] = ["start_seconds", "end_seconds", "goal"]
+                parameters["required"] = ["start_seconds", "end_seconds", "instruction", "evidence_type"]
         return schemas
 
     def snapshot(self):
@@ -88,8 +95,10 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
             raise PlayerProtocolError(f"unknown planner tool {name!r}")
         if session_id is not None and session_id != self.session_id:
             raise PermissionError("player action session does not match the active episode")
-        if set(arguments) != {"start_seconds", "end_seconds", "goal"}:
-            raise PlayerProtocolError("observe accepts exactly start_seconds, end_seconds and goal")
+        required = {"start_seconds", "end_seconds", "instruction", "evidence_type"}
+        if not required <= set(arguments) or set(arguments) - required - {"reference"}:
+            raise PlayerProtocolError("observe requires start_seconds, end_seconds, instruction and "
+                                      "evidence_type; only reference is optional")
         start, end = arguments["start_seconds"], arguments["end_seconds"]
         if any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t)
                for t in (start, end)):
@@ -100,10 +109,17 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
             )
         # Validate the semantic request before changing state or consuming media.
         try:
-            goal = ObserverGoal.from_mapping(arguments["goal"], allow_coverage=False,
+            # Adapt the public instruction to Flat's stable internal receipt and
+            # routing type. No wording, support or observer selection is inferred.
+            internal = {"target": arguments["instruction"], "type": arguments["evidence_type"]}
+            if "reference" in arguments:
+                internal["reference"] = arguments["reference"]
+            goal = ObserverGoal.from_mapping(internal, allow_coverage=False,
                                              require_relation_reference=False)
         except (TypeError, ValueError) as exc:
-            raise PlayerProtocolError(str(exc)) from exc
+            message = str(exc).replace("goal.target", "instruction").replace("goal.reference", "reference")
+            message = message.replace("observer goal type", "evidence_type").replace("relation goals", "relation evidence")
+            raise PlayerProtocolError(message) from exc
         # Player's navigation setter recentres, rounds and imposes a 0.5 s floor.
         # Direct observation preserves the exact valid support chosen by the planner.
         self.state.window_start_seconds, self.state.window_end_seconds = float(start), float(end)

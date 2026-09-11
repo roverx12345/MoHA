@@ -32,6 +32,19 @@ class FakeClient:
 
 
 class RoleTests(unittest.TestCase):
+    def test_instruction_evidence_type_keeps_specialist_attribution(self):
+        from moha.roles import validate_diagnosis
+        for evidence_type, capability in (("text", "ocr"), ("speech", "asr")):
+            trace = payload()
+            trace["events"][0]["arguments"] = {
+                "instruction": "Report the words with their times.", "evidence_type": evidence_type}
+            value = {k: v for k, v in diagnosis(failed_capability=capability).items()
+                     if k in DIAGNOSIS_SCHEMA["properties"]}
+            validate_diagnosis(value, trace)
+            trace["events"][0]["arguments"]["evidence_type"] = "general"
+            with self.assertRaises(ValueError):
+                validate_diagnosis(value, trace)
+
     def test_exact_schema_is_in_actual_prompt(self):
         client = FakeClient(diagnosis())
         result = Judge(client).diagnose(payload(), list(catalog().values()))
