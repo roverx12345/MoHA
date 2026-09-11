@@ -63,6 +63,7 @@ class EndpointTests(unittest.TestCase):
         judge = copy.deepcopy(cfg["models"]["judge"])
         judge["key"] = {"local": True}
         cfg["models"] = self.models("http://p0/v1,http://p1/v1")
+        cfg["models"]["planner"]["spec"]["retries"] = 2
         cfg["models"]["judge"] = judge
         cfg["specialists"] = []
         cfg.pop("image")
@@ -91,6 +92,11 @@ class EndpointTests(unittest.TestCase):
                 self.assertEqual([j.client.adapter for j in cal.judges], prepared["clients"]["judges"])
                 self.assertEqual([r.role.client.adapter for r in cal.resolvers], prepared["clients"]["probe_judges"])
                 self.assertEqual([r.runner.service for r in cal.resolvers], [r.service for r in cal.runners])
+                self.assertEqual([r.planner.spec.retries for r in cal.runners], [2, 2])
+                self.assertEqual([r.audit_planner.spec.retries for r in cal.runners], [0, 0])
+                for runner in cal.runners:
+                    self.assertEqual(runner.planner.spec.base_url, runner.audit_planner.spec.base_url)
+                    self.assertIsNot(runner.planner, runner.audit_planner)
 
 
 class DiagnosisConfigTests(unittest.TestCase):

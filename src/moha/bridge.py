@@ -310,7 +310,11 @@ def build(prepared, store):
             service.ocr_perception_model = image["spec"]["model"]
         if asr:
             service.asr_perception_model = asr["spec"]["model"]
+        planner_config = config["models"]["planner"]
+        audit_config = {**planner_config, "spec": {**planner_config["spec"],
+                        "base_url": clients["planner"].spec.base_url, "retries": 0}}
         runners.append(EpisodeRunner(service, clients["planner"], extractor=clients.get("extractor"),
+            audit_planner=text_client(audit_config, prepared["budget"]),
             asr_backend="whisper" if asr else observer["backend"], store=store, lane=lane))
     return Calibrator(runners=runners, judges=[Judge(TextRoleClient(c)) for c in prepared["clients"]["judges"]],
         store=store, calibration=prepared["calibration"], validation=prepared["validation"],

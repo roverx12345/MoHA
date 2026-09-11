@@ -255,6 +255,20 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 `resume` 只接受完全一致的源码、依赖、配置和输入身份。修改 Judge、计票规则或运行逻辑后应建立新实验；复用旧 episode 必须单独核验运行语义并记录来源，不能把旧 manifest 改名覆盖。
 
+请求重试由 `models.planner.spec.retries` 显式控制，例如 `2` 表示首次请求之外最多再试两次；它复用 Flat 的传输退避，不增加 planner 的逻辑步数。修改此配置仍须新建运行身份。verification audit 使用独立的零重试 client；已经开始 audit 的失败 episode 不会自动重放。
+
+对已初始化的运行，可用有限次数的恢复守护：
+
+```bash
+$PY -m moha.supervise --config /path/outside/repo/config.json \
+  --output /path/outside/repo/run --state-dir /path/outside/repo/control/recovery \
+  --max-restarts 3 --backoff-seconds 30
+```
+
+最多启动四次相同配置的 `resume`，重启间隔为 30、60、120 秒。只有本次子进程新写入的 checkpoint 明确标记可恢复的传输故障，才会继续；鉴权、契约校验、未知退出和人工中断会停止。守护状态、每次 PID、退出原因和日志持久化在 state-dir，重新执行不会重置次数上限；锁阻止重复守护，退出状态缺失时拒绝启动另一个子进程。失败记录只保存异常类型、HTTP 状态及恢复分类，不保存可能包含凭据的异常文本。
+
+最终感知校准启用时，不涉及可用 specialist 的 observer 诊断保留为 `deferred`，不进入要求探针已完成的推荐流程；采样配置仍由最终验证选择。
+
 最终评测：
 
 ```bash

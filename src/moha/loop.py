@@ -11,6 +11,7 @@ from .evidence import diagnosis_view
 from .roles import failure_profile, rank_candidates
 from .store import RunStore
 from .perception import calibrate_perception, policy_grid
+from .failures import ExecutionFailure, classify_failure
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,8 @@ class Calibrator:
                 episode = self.runners[lane].run(harness, sample, repeat)
                 if episode.status == "error":
                     self.store.record_error("episode", episode.to_dict())
-                    raise RuntimeError("episode execution failed; error artifact saved")
+                    raise ExecutionFailure(episode.raw.get("failure", {
+                        "category": "unknown_episode_error", "retryable": False}))
             checked([episode], [sample], harness, repeat)
             if saved is None:
                 self.store.write(path, episode.to_dict(), immutable=True)
@@ -163,6 +165,7 @@ class Calibrator:
                     if self.perception_calibration and not probe_specialist:
                         result["observer_resolution"] = {"status": "deferred",
                             "reason": "sampling policies are evaluated after structural adaptation"}
+                        result.update(candidate_id=None, proposal_reason=result["observer_resolution"]["reason"])
                     elif resolver is None:
                         result["observer_resolution"] = {"status": "unavailable"}
                     else:
@@ -171,7 +174,7 @@ class Calibrator:
                             result["observer_resolution"] = resolver.resolve(sample, harness, episode, result, probe_candidates)
                         if result["observer_resolution"].get("status") == "error":
                             result["status"] = "error"
-                    if result.get("status") == "valid":
+                    if result.get("status") == "valid" and result["observer_resolution"].get("status") != "deferred":
                         proposal = judge.recommend(payload, result, available)
                         result["observer_proposal"] = proposal
                         if proposal["status"] == "error":
@@ -249,6 +252,7 @@ class Calibrator:
             return self._finish(self.state["stop_reason"])
         self.state["status"] = "running"
         self.state.pop("error_type", None)
+        self.state.pop("failure", None)
         self._save()
         try:
             if self.state.get("phase") == "perception":
@@ -306,6 +310,7 @@ class Calibrator:
         except Exception as exc:
             self.state["status"] = "error"
             self.state["error_type"] = type(exc).__name__
+            self.state["failure"] = classify_failure(exc)
             self._save()
             raise
 

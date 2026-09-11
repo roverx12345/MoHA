@@ -174,6 +174,24 @@ class PerceptionLoopTests(unittest.TestCase):
             self.assertTrue(any(c.endswith(".target_fps") for c in resolver.seen))
             self.assertEqual(judge.seen["status"], "no_rescue")
 
+    def test_deferred_sampling_diagnosis_does_not_enter_completed_probe_recommendation(self):
+        class Judge(DemoJudge):
+            def diagnose(self, *args):
+                return {"status": "valid", "failure": "observer", "failed_capability": None,
+                        "candidate_id": None, "evidence_steps": [1]}
+            def recommend(self, *args):
+                raise AssertionError("deferred sampling has no completed counterfactual probe")
+        with RunStore(self.root, {}) as store:
+            loop = self.loop(store, RateRunner())
+            loop.judges = (Judge(),)
+            episodes = loop.batch(Harness(), loop.calibration, 0, "calibration")
+            result, = loop.diagnose(Harness(), episodes, list(loop.catalog.values()))
+            self.assertEqual(result["status"], "valid")
+            self.assertEqual(result["observer_resolution"]["status"], "deferred")
+            self.assertIsNone(result["candidate_id"])
+            self.assertTrue(result["proposal_reason"])
+            self.assertNotIn("observer_proposal", result)
+
 
 if __name__ == "__main__":
     unittest.main()

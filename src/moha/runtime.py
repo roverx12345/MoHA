@@ -11,6 +11,7 @@ from .verification import (VERIFICATION_POLICY, VERIFICATION_CAPABILITY, diagnos
                            verification_tool, visible_records, parse_audit)
 from .control import NO_NOVELTY_POLICY, NoNoveltyController, visible_memory_payloads
 from .answers import ANSWER_PARSING_POLICY, terminal_json_answer
+from .failures import ExecutionFailure, classify_failure
 
 
 PLANNER_COMPLETION_POLICY = "moha_pre_submit_verification_budget_v3"
@@ -49,6 +50,7 @@ class RecordingRegistry:
         self.memory = memory
         self.step, self.call_id = 0, None
         self.fatal_error = None
+        self.fatal_failure = None
 
     def __getattr__(self, key):
         return getattr(self.registry, key)
@@ -61,6 +63,7 @@ class RecordingRegistry:
         except Exception as exc:
             if isinstance(exc, (ProviderError, MediaError, CredentialError, OSError)) or not isinstance(exc, (ValueError, PermissionError)):
                 self.fatal_error = type(exc).__name__
+                self.fatal_failure = classify_failure(exc)
             self.emit(kind="tool_result", step=self.step, tool=name, call_id=self.call_id,
                       result=_error_result(exc, tool=name))
             raise
@@ -72,8 +75,9 @@ class RecordingRegistry:
 
 class EpisodeRunner:
     def __init__(self, service, planner, *, extractor=None, asr_backend="qwen3omni",
-                 ocr_backend="image_ocr", store=None, lane=0):
+                 ocr_backend="image_ocr", store=None, lane=0, audit_planner=None):
         self.service, self.planner, self.extractor = service, planner, extractor
+        self.audit_planner = audit_planner if audit_planner is not None else planner
         self.asr_backend, self.ocr_backend, self.store = asr_backend, ocr_backend, store
         self.lane = lane
 
@@ -172,7 +176,7 @@ class EpisodeRunner:
                 raw["verification_gate"] = {"trigger": trigger, "step": audit_step,
                                             "candidate_answer": copy.deepcopy(candidate), "performed": True}
                 emit(kind="verification_request", step=audit_step, messages=fresh, call_id=call_id, trigger=trigger)
-                diagnosis = self.planner.call(messages=fresh, tools=[], tool_choice="none", parallel_tool_calls=False)
+                diagnosis = self.audit_planner.call(messages=fresh, tools=[], tool_choice="none", parallel_tool_calls=False)
                 emit(kind="verification", step=audit_step, message=diagnosis.message(),
                      metadata=dict(diagnosis.metadata), call_id=call_id, trigger=trigger)
                 result = {"diagnosis": diagnosis.message().get("content"), "receipt": dict(diagnosis.metadata)}
@@ -324,12 +328,15 @@ class EpisodeRunner:
                             result = dispatcher.invoke(call.name, arguments, session_id=session_id)
                     messages.append(_tool_message(call.id, result))
                     if registry.fatal_error:
-                        raise RuntimeError("tool infrastructure failure: " + registry.fatal_error)
+                        raise ExecutionFailure(registry.fatal_failure)
             raw["player_state"] = player.snapshot()
         except Exception as exc:
             raw["status"] = "error"
+            raw["failure"] = classify_failure(exc)
+            if raw.get("verification_gate", {}).get("performed"):
+                raw["failure"].update(retryable=False, automatic_resume_blocked="verification_already_started")
             emit(kind="error", step=used_calls,
-                 error_type=type(exc).__name__)
+                 error_type=type(exc).__name__, failure=raw["failure"])
         finally:
             raw["model_calls_used"] = used_calls
             if harness.memory:
@@ -341,6 +348,7 @@ class EpisodeRunner:
                 except Exception as exc:
                     raw["receipt_error_type"] = type(exc).__name__
                     raw["status"] = "error"
+                    raw["failure"] = {**classify_failure(exc), "retryable": False}
         episode = normalize(sample, harness, repeat, raw)
         if self.store:
             self.store.write(f"attempts/{attempt_id}/result.json", episode.to_dict(), immutable=True)
