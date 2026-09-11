@@ -107,6 +107,19 @@ class ValidationTests(unittest.TestCase):
         new[0][0].usage = {}
         self.assertEqual(compare(old, new, self.samples, self.old, self.new, ValidationPolicy())["reason"], "missing_measured_cost")
 
+    def test_invalid_final_answer_is_incorrect_with_its_full_measured_cost(self):
+        old = self.runs(self.old, ["A"] * 8)
+        new = self.runs(self.new, ["A"] * 8)
+        new[0][0] = replace(new[0][0], status="invalid_final_answer", usage={"video_tokens": 900})
+        verdict = compare(old, new, self.samples, self.old, self.new, ValidationPolicy())
+        self.assertEqual(verdict["new_accuracy"], 7 / 8)
+        self.assertEqual(verdict["new_cost"], 200)
+        self.assertEqual(verdict["paired"]["correct_to_wrong"], 1)
+        self.assertFalse(verdict["accepted"])
+        for status in ("error", "provider_error", "invalid_verification", "unknown_status"):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                checked([replace(new[0][0], status=status)] + new[0][1:], self.samples, self.new, 0)
+
     def test_optional_repeats_gate_detects_regression(self):
         old = self.runs(self.old, [["A"] * 8, ["B"] * 8, ["B"] * 8], repeats=3)
         new = self.runs(self.new, [["B"] * 8, ["A"] * 8, ["A"] * 8], repeats=3)

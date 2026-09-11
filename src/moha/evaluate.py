@@ -16,7 +16,7 @@ def checked(results: list[Episode], samples: list[Sample], harness: Harness, rep
                 or result.video_key != list(sample.video_key) or result.harness_id != harness.id
                 or result.repeat != repeat):
             raise ValueError("episode identity does not match validation request")
-        if result.status not in {"completed", "budget_exhausted", "abstained"}:
+        if result.status not in {"completed", "budget_exhausted", "abstained", "invalid_final_answer"}:
             raise ValueError("infrastructure/error episode cannot enter a promotion comparison")
     return ordered
 

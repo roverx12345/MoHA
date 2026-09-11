@@ -241,6 +241,8 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 复核输入为两个纯文本消息：题目、完整选项、候选答案、当前可用原始观察及其 missing/uncertainty/窗口、明确标为 unverified 的 planner 请求和最近一条可见文本假设。没有工作笔记账本、旧对话列表、视频截图或参考答案。source_ids 只标记关注来源，不过滤其他可用的相反证据。未启用 memory 时，仅使用触发时的实际历史投影可见观察；最终 planner 获得同一份原始观察和复核结果。
 
+`invalid_final_answer` 是已结束的模型作答失败：按未答对计入校准和验证，保留原始状态、输出和全部实测成本，写入 episode 缓存并继续下一题；恢复运行时不重放该题。基础设施错误仍中止运行。
+
 复核请求 JSON 字段 `support_status`（supported/contradicted/insufficient）、`unsupported_assumptions`、`contradictory_evidence`、`best_supported_option`、`diagnosis`。通过文本 prompt 请求这一输出，并本地校验，不增加 provider 专属 response_format 或重试。格式无效时保留原文并明确标记 invalid，仍只给 planner 一次最终作答机会；基础设施错误保持 fatal。该复核判断是建议，最终 planner 可以维持、修改答案或弃答。
 
 默认 H0 不增加模块工具或自动复核。catalog 中 `planner.module.verification_basic` 仍是一次单坐标布尔干预，但其含义包含工具、状态、触发与预算控制；memory 的去冗余控制由 memory capability 承担，二者没有自动路由关系。

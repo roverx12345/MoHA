@@ -106,6 +106,27 @@ class ParallelTests(unittest.TestCase):
         self.assertEqual([r.calls for r in resumed], [["cal0", "cal2"], ["cal3"]])
         self.assertEqual(len(episodes), 4)
 
+    def test_invalid_final_answer_continues_the_batch_and_is_not_replayed_on_resume(self):
+        class InvalidFinal(Runner):
+            def run(self, harness, item, repeat):
+                episode = super().run(harness, item, repeat)
+                if item.sample_id == "cal0":
+                    episode.status = "invalid_final_answer"
+                    episode.raw = {"verification_gate": {"audit_status": "valid"},
+                                   "final_finish_reason": "length", "original_output": "Unfinished explanation"}
+                return episode
+        runners = [InvalidFinal(), Runner()]
+        calibrator = self.calibrator(runners)
+        episodes = calibrator.batch(Harness(verification=True), self.samples, 0, "validation")
+        self.assertEqual([r.calls for r in runners], [["cal0", "cal2"], ["cal1", "cal3"]])
+        self.assertEqual((episodes[0].status, episodes[0].correct), ("invalid_final_answer", False))
+        self.assertEqual(self.store.read("progress.json")["completed"], 4)
+        self.assertEqual(len(list((self.store.root / "episodes").glob("*.json"))), 4)
+        self.assertFalse(list((self.store.root / "errors").glob("*.json")))
+        replay = calibrator.batch(Harness(verification=True), self.samples, 0, "validation")
+        self.assertEqual([e.to_dict() for e in replay], [e.to_dict() for e in episodes])
+        self.assertEqual([r.calls for r in runners], [["cal0", "cal2"], ["cal1", "cal3"]])
+
     def test_observer_probes_use_the_calibration_samples_lane(self):
         class Judge(DemoJudge):
             def diagnose(self, *args):
