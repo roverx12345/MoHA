@@ -340,7 +340,10 @@ class EpisodeRunner:
                                                               arguments=arguments, call_id=call.id)
                             except (ValueError, TypeError, KeyError) as exc:
                                 result = dispatcher.error(exc, tool=call.name)
-                            emit(kind="tool_result", step=step, tool=call.name, call_id=call.id, result=result)
+                            audit_fields = fields(result, ("receipt", "read_fingerprint", "ledger_versions"))
+                            result = tool_context(result)
+                            emit(kind="tool_result", step=step, tool=call.name, call_id=call.id, result=result,
+                                 **({"audit": audit_fields} if audit_fields else {}))
                         else:
                             result = dispatcher.invoke(call.name, arguments, session_id=session_id)
                     messages.append(_tool_message(call.id, result))

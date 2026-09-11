@@ -127,6 +127,11 @@ class VerificationGateTests(unittest.TestCase):
         results = [e for e in result.events if e["kind"] == "tool_result"]
         self.assertEqual(len(results), 3)
         self.assertTrue(all(e["result"]["isError"] for e in results[1:]))
+        self.assertEqual(set(results[0]["result"]), {"audit", "audit_status"})
+        self.assertIn("receipt", results[0]["audit"])
+        feedback = next(m for m in planner.calls[-1]["messages"]
+                        if m.get("role") == "tool" and m.get("tool_call_id") == "verify")
+        self.assertEqual(json.loads(feedback["content"]), results[0]["result"])
 
     def test_abstention_is_audited_and_final_decision_is_not_forced_by_verifier(self):
         abstain = {"role": "assistant", "content": '{"status":"abstained","answer":null}'}
