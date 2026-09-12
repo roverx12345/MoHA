@@ -113,7 +113,7 @@ Planner 用 `observe(start_seconds, end_seconds, instruction, evidence_type)` �
 
 `context.py` 的 `moha_public_tool_results_v5` 统一实际工具返回和历史输入。初始输入仅保留题目、视频时长和是否有音轨；工具反馈保留检索候选、当前/已观察窗口、完整观察事实与不确定性、窗口/采样范围和可操作错误。去除存储元数据后，相同观察副本去重，冲突证据保留。轨迹中 `tool_result.result` 就是公开返回，执行回执另存 `tool_result.audit`；感知预算、provider/请求哈希等仍可从独立审计与感知记录追溯。公开返回不含 `player_state`、`backend_result` 或预算 ledger。剩余模型调用数、启用模块及其可用状态仍是模型可用的行动约束。
 
-最终调用清空工具定义，并由固定 Flat adapter 在 HTTP 请求体显式发送 `tool_choice: "none"`，包括审查和审查后的最终答复；若服务端仍返回工具调用，继续按协议拒绝执行，不额外消耗观察预算，也不重试审查。完整原始工具结果和实际投影后的每轮输入分别保存。
+最终调用清空工具定义，并由固定 Flat adapter 在 HTTP 请求体显式发送 `tool_choice: "none"`，同时用严格 JSON Schema 将输出限制为 `status` 与当前选项标签，避免长篇分析耗尽输出额度。若服务端仍把完整终止答案编码为唯一的未声明 `answer`/`final_answer` 调用，runtime 只规范化其严格载荷而不执行工具；混合调用、额外字段和含糊值仍按协议拒绝。审查请求本身保持文本 JSON，不增加 provider 结构化输出约束。完整原始工具结果和实际投影后的每轮输入分别保存。
 
 工具名和输入投影改变后，必须创建新实验并从 H0 做完整校准，不能把旧接口的 H0 或候选 episode 当作新基线。既有冻结运行保持原接口。
 

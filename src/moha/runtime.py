@@ -9,7 +9,8 @@ from .context import PLANNER_CONTEXT_POLICY, bounded_history, tool_context, fiel
 from .memory import MEMORY_POLICY, MEMORY_CAPABILITY, ObservationMemory, persistent_history
 from .verification import (VERIFICATION_POLICY, VERIFICATION_CAPABILITY, diagnosis_messages,
                            verification_tool, visible_records, parse_audit)
-from .answers import ANSWER_PARSING_POLICY, terminal_json_answer
+from .answers import (ANSWER_PARSING_POLICY, final_answer_response_format,
+                      terminal_json_answer, terminal_tool_call_answer)
 from .failures import ExecutionFailure, classify_failure
 
 
@@ -263,11 +264,36 @@ class EpisodeRunner:
                      visible_observations=visible_observations(projected), tools=call_tools)
                 used_calls += 1
                 response = self.planner.call(messages=projected, tools=call_tools,
-                                             tool_choice="none" if final_call else "auto", parallel_tool_calls=False)
+                                             tool_choice="none" if final_call else "auto",
+                                             parallel_tool_calls=False,
+                                             **({"response_format": final_answer_response_format(sample.task["options"])}
+                                                if final_call else {}))
                 message = response.message()
                 turn_start = len(messages)
                 messages.append(message)
                 emit(kind="planner", step=step, message=message, metadata=dict(response.metadata))
+                tool_answer = None
+                if len(response.tool_calls) == 1:
+                    call = response.tool_calls[0]
+                    tool_answer = terminal_tool_call_answer(
+                        call.name, call.arguments, sample.task["options"])
+                if tool_answer is not None:
+                    extraction = {"method": "terminal_tool_call", "attempted": False,
+                                  "policy": ANSWER_PARSING_POLICY,
+                                  "tool": response.tool_calls[0].name}
+                    if harness.verification and not verification_done:
+                        emit(kind="candidate_answer", step=step, message=message,
+                             answer=tool_answer, extraction=extraction)
+                        run_verification("pre_submit", projected + messages[turn_start:],
+                                         candidate=tool_answer)
+                        continue
+                    raw["state"]["final_answer"] = copy.deepcopy(tool_answer)
+                    raw["final_answer"] = copy.deepcopy(tool_answer)
+                    raw["answer"], raw["answer_extraction"] = tool_answer["answer"], extraction
+                    raw["terminal_answer_status"] = tool_answer["status"]
+                    raw["status"] = {"answered": "completed", "abstained": "abstained"}[tool_answer["status"]]
+                    emit(kind="terminal", step=step, message=message, answer=tool_answer)
+                    break
                 if not response.tool_calls:
                     final = response.final_answer if isinstance(response.final_answer, dict) else {}
                     label = final.get("answer")

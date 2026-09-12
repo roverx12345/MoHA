@@ -172,3 +172,4 @@ class VerificationWireTests(unittest.TestCase):
         self.assertEqual(result.usage["verification_calls"], 1)
         self.assertFalse(transport.calls[-1].get("tools"))
         self.assertEqual(transport.calls[-1]["tool_choice"], "none")
+        self.assertEqual(transport.calls[-1]["response_format"]["type"], "json_schema")

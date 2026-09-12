@@ -153,6 +153,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(planner.calls), 2)
         self.assertEqual(planner.calls[-1]["tool_choice"], "none")
         self.assertEqual(planner.calls[-1]["tools"], [])
+        self.assertEqual(planner.calls[-1]["response_format"]["type"], "json_schema")
         self.assertNotIn("observe", [c[0] for c in service.calls])
         terminal = next(e for e in result.events if e["kind"] == "terminal")
         self.assertEqual(terminal["reason"], "tool_calls_on_reserved_final_call")
@@ -176,7 +177,22 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "abstained")
         self.assertEqual(len(planner.calls), 1)
         self.assertEqual(planner.calls[0]["tool_choice"], "none")
+        self.assertEqual(planner.calls[0]["response_format"]["type"], "json_schema")
         self.assertEqual([c[0] for c in service.calls], ["begin"])
+
+    def test_unadvertised_answer_tool_call_finishes_without_dispatch(self):
+        for name, payload, expected in [
+            ("answer", {"status": "answered", "answer": "A"}, ("completed", "A")),
+            ("final_answer", {"status": "abstained", "answer": ""}, ("abstained", None)),
+        ]:
+            with self.subTest(name=name):
+                service = Service()
+                planner = Planner([call(name, payload)])
+                result = EpisodeRunner(service, planner).run(Harness(max_steps=2), sample("cal"), 0)
+                self.assertEqual((result.status, result.answer), expected)
+                self.assertEqual(result.raw["answer_extraction"]["method"], "terminal_tool_call")
+                self.assertEqual([c[0] for c in service.calls], ["begin"])
+                self.assertEqual(len(planner.calls), 1)
 
     def test_memory_injection_restores_history_evicted_original_observation(self):
         class Scoped(Service):
@@ -225,7 +241,8 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(result.raw["terminal_answer_status"], "answered" if expected else "abstained")
                 self.assertEqual(len(planner.calls), 3)
                 self.assertEqual(planner.calls[-1]["tool_choice"], "none")
-                self.assertTrue(all("response_format" not in c for c in planner.calls))
+                self.assertTrue(all("response_format" not in c for c in planner.calls[:-1]))
+                self.assertEqual(planner.calls[-1]["response_format"]["type"], "json_schema")
 
     def test_planner_outage_preserves_auditable_error_episode(self):
         from moha.store import RunStore
@@ -367,7 +384,7 @@ class WireTests(unittest.TestCase):
             final = transport.calls[-1]
             self.assertEqual(final["tool_choice"], "none")
             self.assertNotIn("tools", final)
-            self.assertNotIn("response_format", final)
+            self.assertEqual(final["response_format"]["type"], "json_schema")
             self.assertNotIn("chat_template_kwargs", final)
             wires.append([{k: v for k, v in c.items() if k != "model"} for c in transport.calls])
         self.assertEqual(wires[0], wires[1])
@@ -397,6 +414,7 @@ class WireTests(unittest.TestCase):
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
         self.assertEqual([c["tool_choice"] for c in transport.calls], ["auto", "auto", "none"])
         self.assertNotIn("tools", transport.calls[-1])
+        self.assertEqual(transport.calls[-1]["response_format"]["type"], "json_schema")
         self.assertNotIn("memory_ledger", transport.calls[-1]["messages"][-1]["content"])
 
     def test_text_boundary_keeps_video_metadata_in_actual_user_message(self):

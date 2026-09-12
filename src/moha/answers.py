@@ -6,7 +6,32 @@ import re
 from collections.abc import Collection
 
 
-ANSWER_PARSING_POLICY = "moha_terminal_json_v1"
+ANSWER_PARSING_POLICY = "moha_terminal_json_v2"
+
+
+def final_answer_response_format(option_labels: Collection[str]) -> dict:
+    """Constrain a no-tool terminal call to the two accepted answer shapes."""
+    labels = list(option_labels)
+    if not labels or any(not isinstance(label, str) or not label for label in labels):
+        raise ValueError("option labels must be non-empty strings")
+    if len(set(labels)) != len(labels):
+        raise ValueError("option labels must be unique")
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "moha_terminal_answer",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["answered", "abstained"]},
+                    "answer": {"anyOf": [{"type": "string", "enum": labels}, {"type": "null"}]},
+                },
+                "required": ["status", "answer"],
+                "additionalProperties": False,
+            },
+        },
+    }
 
 
 def _unique_object(pairs):
@@ -55,4 +80,36 @@ def terminal_json_answer(content: object, option_labels: Collection[str]) -> dic
             return {"status": "answered", "answer": answer}
         if status == "abstained" and "answer" in value and answer is None:
             return {"status": "abstained", "answer": None}
+    return None
+
+
+def terminal_tool_call_answer(name: object, arguments: object,
+                              option_labels: Collection[str]) -> dict | None:
+    """Recover one explicit answer emitted through an unadvertised terminal tool.
+
+    Some OpenAI-compatible models serialize a requested final answer as an
+    ``answer`` or ``final_answer`` tool call even when that tool was never
+    advertised. This recognizes only the exact terminal payload and never
+    executes the hallucinated tool.
+    """
+    if name not in {"answer", "final_answer"}:
+        return None
+    if isinstance(arguments, str):
+        try:
+            value = json.loads(arguments, object_pairs_hook=_unique_object)
+        except (ValueError, json.JSONDecodeError):
+            return None
+    elif isinstance(arguments, dict):
+        value = arguments
+    else:
+        return None
+    if set(value) != {"status", "answer"}:
+        return None
+    status, answer = value["status"], value["answer"]
+    if status == "answered" and isinstance(answer, str) and answer in option_labels:
+        return {"status": "answered", "answer": answer}
+    # Qwen's XML-to-tool normalization represents an empty null parameter as
+    # an empty string. The explicit abstained status keeps this unambiguous.
+    if status == "abstained" and answer in (None, ""):
+        return {"status": "abstained", "answer": None}
     return None

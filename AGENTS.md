@@ -61,6 +61,10 @@
   Request the support/assumptions/contradictions/best-option/diagnosis JSON audit;
   validate once, retain invalid raw output explicitly, and never retry the audit.
   The final planner may keep, revise or abstain; the audit cannot impose an answer.
+- Constrain every no-tool terminal answer call with a strict JSON schema over the
+  current option labels. If a provider nevertheless returns exactly one unadvertised
+  `answer` or `final_answer` call with the complete terminal payload, normalize it
+  without executing a tool. Reject mixed calls, unknown fields and ambiguous values.
 - Commit coherent changes before real model calls. Both this checkout and the
   pinned runtime must be clean. Record source/runtime commits, input/config hashes,
   provider identities, command, environment, and output location for every run.
