@@ -91,6 +91,8 @@ PYTHONPATH=src python -m moha demo --output /tmp/moha-demo
 
 ## 校准流程
 
+GPT-5.5 的新实验模板显式设置 `search.max_rounds=5`，即最多五轮结构搜索（日志编号 0–4）；满足收敛条件时仍可提前结束。该上限不包含后续九组感知验证。其他模型使用各自显式配置，未指定该项时 `SearchPolicy` 的通用默认值仍为 6。已有实验保留启动时冻结的配置。
+
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
 Planner 系统提示按当前 Harness 组装：H0 只包含 search/observe、证据使用和最终作答规则；overview、memory、verification 的说明分别只在对应模块开启时加入，与工具和状态的开关一致。关闭模块时不保留“如果启用”的说明。实际提示词保存在原始消息中，轨迹用 `planner_prompt_policy: moha_enabled_module_prompt_v1` 标记此规则。该提示词变化需要新建运行并从 H0 完整校准，不能复用旧提示词生成的 episode 作为新基线。

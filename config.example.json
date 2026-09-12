@@ -11,7 +11,7 @@
     "history_tokens": 18000
   },
   "search": {
-    "max_rounds": 6,
+    "max_rounds": 5,
     "candidates_per_round": 2,
     "patience": 2,
     "failure_stability": 0.1,
