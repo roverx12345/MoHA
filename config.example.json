@@ -19,7 +19,7 @@
     "max_diagnosis_error_rate": 0.2
   },
   "validation": {
-    "repeats": 1,
+    "repeats": 2,
     "min_gain": 0.02,
     "cost_metric": "video_tokens",
     "cost_penalty": 0.0,

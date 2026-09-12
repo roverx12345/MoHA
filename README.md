@@ -189,7 +189,12 @@ episode 内的实际观察窗口仍由 Planner 根据反馈选择，不能把这
 同时检查结构历史与九组选择的 provenance。
 
 `doctor` 显示九组和所需 episode 数：`9 × validation 样本数 × repeats`。
-后续新实验默认使用 64 cal / 32 val，最终九组感知参数各验证 32 条，共 288 个 episode。
+后续新实验默认使用 64 cal / 32 val，并显式设置 `validation.repeats=2`。
+每个待比较的 Harness（包括 H0 和候选）都在同一份完整 validation 清单上独立运行两遍，
+以两遍准确率的算术平均值比较；32 条验证题对应每个配置 64 个 episode。
+不同 repeat 使用独立 episode 缓存，续跑仅复用对应 repeat 已完成的结果。
+最终九组感知参数也各运行两遍并按平均准确率选择，共 `9 × 32 × 2 = 576` 个 episode。
+calibration 仍保持每轮一遍；原有晋升门槛不变，不要求每一遍都单独胜出。
 复用原始划分的样本内容及顺序，每视频一道题，calibration 与 validation 视频互不重叠：
 `/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/`。
 这两组均来自 train，仅用于开发和配置选择；reserve 不代表从未用于历史实验的独立测试集。
