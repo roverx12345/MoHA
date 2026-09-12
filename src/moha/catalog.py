@@ -48,7 +48,7 @@ class Intervention:
 def catalog() -> dict[str, Intervention]:
     modules = {
         "overview": ("overview", "Prefetch a navigation-only overview before planning; it consumes perception budget and supplies coarse regions, not answer evidence."),
-        "memory_basic": ("memory", "Provide persistent original result and working-note ledgers, with versioned no-novelty control for memory_read. Suppress unchanged still-visible reads and mask consecutive repetition; permit restoration after eviction. Preserve scoped observations, duplicates and conflicts without summarizing or merging. Notes are supplied by the planner."),
+        "memory_basic": ("memory", "Automatically restore original perceptual evidence omitted from bounded history, before recent interaction. No memory tools or planner notes. Use at most 6000 tokens within the shared history allowance; restore the complete missing set or explicitly report capacity limits. Preserve scoped claims and conflicts, deduplicating only exact copies in the view."),
         "verification_basic": ("verification", "Enable one evidence-grounded answer-audit capability: intercept a submitted candidate or reserve the last two shared model calls, audit once, then finalize with all tools disabled. verify_fresh may enter this stage early. No extra compute or corrective perception; the final planner may answer, revise or abstain. Without memory, audit only currently visible evidence."),
         "retrieval_basic": ("retrieval_guard", "Enable the existing retrieval-stagnation intervention."),
     }

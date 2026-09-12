@@ -105,7 +105,7 @@ class RuntimeTests(unittest.TestCase):
         observed = next(c[1] for c in service.calls if c[0] == "observe")
         self.assertEqual(observed["experiment_render"]["requested_frames"], 64)
         context = json.loads(planner.calls[-1]["messages"][-1]["content"])
-        self.assertEqual(context["memory_ledger"]["result_records"], 1)
+        self.assertEqual(len(result.raw["memory"]["result_memory"]), 1)
         self.assertNotIn("advisory_verification", context)
         self.assertIn("verify_fresh", str(planner.calls[0]["tools"]))
 
@@ -178,7 +178,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(planner.calls[0]["tool_choice"], "none")
         self.assertEqual([c[0] for c in service.calls], ["begin"])
 
-    def test_memory_read_restores_history_evicted_original_observation(self):
+    def test_memory_injection_restores_history_evicted_original_observation(self):
         class Scoped(Service):
             def inspect_window(self, session_id, **kwargs):
                 result = super().inspect_window(session_id, **kwargs)
@@ -190,12 +190,11 @@ class RuntimeTests(unittest.TestCase):
                 return result
         messages = [call("observe", {"start_seconds": i, "end_seconds": i + 5,
                      "instruction": 'action', "evidence_type": 'general'}, str(i)) for i in range(5)]
-        messages.extend([call("memory_read", {"ledger": "result", "source_ids": ["obs0"]}),
-                         {"role": "assistant", "content": '{"answer":"A"}'}])
+        messages.append({"role": "assistant", "content": '{"answer":"A"}'})
         planner = Planner(messages)
         result = EpisodeRunner(Scoped(), planner).run(Harness(memory=True, max_steps=7, history_turns=1), sample("cal"), 0)
         self.assertEqual(result.status, "completed", result.raw)
-        self.assertNotIn("Observed action at 0.", str(planner.calls[-2]["messages"]))
+        self.assertEqual(result.usage["model_calls"], 6)
         self.assertIn("Observed action at 0.", str(planner.calls[-1]["messages"]))
         record = result.raw["memory"]["result_memory"][0]
         self.assertEqual(record["observation_context"]["window"], [0, 5])
@@ -316,22 +315,20 @@ class WireTests(unittest.TestCase):
                         self.assertEqual(last["messages"][0]["content"], prompt)
                         self.assertEqual("overview" in prompt.lower(), overview)
                         self.assertEqual("memory" in prompt.lower(), memory)
-                        self.assertEqual("memory_read" in prompt, memory)
-                        self.assertEqual("working memory" in prompt, memory)
-                        self.assertEqual("no_novelty" in prompt, memory)
+                        self.assertNotIn("memory_read", prompt)
+                        self.assertNotIn("working memory", prompt)
+                        self.assertNotIn("no_novelty", prompt)
                         self.assertEqual("verification" in prompt.lower(), verification)
                         self.assertEqual("verify_fresh" in prompt, verification)
                         self.assertEqual("after the audit" in prompt, verification)
                         self.assertIn("final answer is an assistant message", prompt)
                         expected_tools = {"search", "observe"}
-                        if memory:
-                            expected_tools.update({"memory_read", "memory_note"})
                         if verification:
                             expected_tools.add("verify_fresh")
                         self.assertEqual({t["function"]["name"] for t in first["tools"]}, expected_tools)
                         context = json.loads(first["messages"][-1]["content"])
-                        self.assertEqual("memory_ledger" in context, memory)
-                        self.assertEqual("memory_control" in context, memory)
+                        self.assertNotIn("memory_ledger", context)
+                        self.assertNotIn("memory_control", context)
                         self.assertEqual("verification_gate" in context, verification)
                         self.assertEqual(len(transport.calls), 5 if verification else 3)
                         self.assertEqual(result.usage["verification_calls"], int(verification))
@@ -400,7 +397,7 @@ class WireTests(unittest.TestCase):
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
         self.assertEqual([c["tool_choice"] for c in transport.calls], ["auto", "auto", "none"])
         self.assertNotIn("tools", transport.calls[-1])
-        self.assertIn("memory_ledger", transport.calls[-1]["messages"][-1]["content"])
+        self.assertNotIn("memory_ledger", transport.calls[-1]["messages"][-1]["content"])
 
     def test_text_boundary_keeps_video_metadata_in_actual_user_message(self):
         from flat.core.dispatch import sanitize_gpt_text_payload

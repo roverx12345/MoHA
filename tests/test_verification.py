@@ -20,7 +20,7 @@ class DiagnosisInputTests(unittest.TestCase):
         other = copy.deepcopy(first)
         other["observation"]["facts"][0]["fact"] = "A conflicting description."
         memory.add(other)
-        memory.note("WORKING_SENTINEL")
+        memory.add({"working_note": {"text": "WORKING_SENTINEL"}})
         messages = diagnosis_messages({"question": "Why?", "options": {"A": "OPTION_SENTINEL"}},
             memory.read("result")["result_memory"], "Assess the disagreement.")
         self.assertEqual([x["role"] for x in messages], ["system", "user"])
@@ -58,11 +58,11 @@ class DiagnosisInputTests(unittest.TestCase):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Video OS")
 class NativeVerificationTests(unittest.TestCase):
-    def test_observe_note_diagnose_final_uses_shared_budget_and_returns_raw_text(self):
+    def test_observe_search_diagnose_final_uses_shared_budget_and_returns_raw_text(self):
         text = audit_response()["content"]
         messages = [call("observe", {"start_seconds": 10, "end_seconds": 20,
             "instruction": 'GOAL_SENTINEL', "evidence_type": 'general'}),
-            call("memory_note", {"text": "WORKING_SENTINEL"}),
+            call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}),
             call("verify_fresh", {"diagnostic_question": "What remains uncertain?"}),
             {"role": "assistant", "content": text},
             {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]

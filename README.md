@@ -238,9 +238,22 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 这一步只清理已有输入，不总结或找回已被历史截断丢弃的事实，也不隐式开启 memory。事实附带的来源 ID 与空挂的历史 ID 区别处理；相同 observation ID 下出现的矛盾正文仍分别保留。
 
-`memory_basic` 由 `memory.py` 保存两个追加式账本：原始观察与 planner 工作笔记。正文、窗口、目标、采样、重复记录、同 ID 冲突和 caveat 均原样保留。`memory_read` 仍按 ledger 和可选 source IDs 读取，原始账本不做摘要、排序或合并。
+`memory_basic` 现在是自动上下文注入能力。`memory.py` 保存追加式原始观察账本，
+保留正文、时间范围、指令、证据类型、采样、重复记录、冲突和 caveat；没有工作笔记账本，
+不暴露 `memory_read` / `memory_note`。Planner 无需花一轮调用来恢复旧证据。
 
-`control.py` 独立执行 no-novelty 控制：分别记录 result/working ledger 的内容哈希。已读过且仍在当前上下文可见的相同返回只给 `no_novelty=true` 和版本回执，不再次返回整份账本；连续两次冗余读取后，从下一轮工具列表暂时移除 `memory_read`。账本版本变化时重新开放。若先前原文已被 bounded history 裁掉，也允许重新读取并记录 `restored_after_eviction`，避免破坏 memory 恢复旧证据的作用。该控制不触发 verification，也不删除任何原始观察或笔记。
+每轮先使用原有 bounded history，然后将其中不可见的完整观察插入题目之后、近期交互之前。
+注入消息使用 user role，明确作为 `persistent_observation_data` 数据块；可信的模块提示要求
+将其视为旧观察，而非新用户请求或指令。仍可见的记录不重复注入；只在读取视图中去除完全
+相同的带来源范围的副本，原始账本不改动，同 ID 下的不同内容和不同范围全部保留。
+
+注入块最多 6000 个估算 token，并占用原 `history_tokens` 额度（默认 18000），不是额外预算。
+需要缩减近期历史时重新计算缺失观察，直到被进一步移除的观察也纳入注入块。
+为保持最小实现，不做摘要、相关性筛选或固定早期/近期选择：完整缺失集合无法容纳时，
+保持原有 bounded history 并明确告知容量不足，不选择性隐藏冲突的一侧。
+固定 Flat 对最新完整交互的 advisory 超限保留规则不变，但不会因此额外添加超预算的 memory。
+每步 `history_audit.memory` 记录缺失数、注入数、完整内容哈希、估算 token 和容量限制；
+`visible_observations` 继续来自实际输入。该注入不增加模型调用，也不触发 verification。
 
 `verification_basic` 是完整的 answer-audit capability：`trigger=pre_submit_or_budget_floor`、`max_verifications=1`、`reserve_steps=2`、`post_verify_mode=finalize_only`。planner 提交有效候选答案或明确弃答时，harness 暂不提交，先做一次独立复核，再给 planner 恰好一轮最终回答。若 planner 始终不提交，剩余两次调用时自动进入复核。手动 `verify_fresh(diagnostic_question?, source_ids?)` 可以提前进入同一阶段，也占用这唯一一次复核额度；完成后不会再自动复核。
 
@@ -252,9 +265,9 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 复核请求 JSON 字段 `support_status`（supported/contradicted/insufficient）、`unsupported_assumptions`、`contradictory_evidence`、`best_supported_option`、`diagnosis`。通过文本 prompt 请求这一输出，并本地校验，不增加 provider 专属 response_format 或重试。格式无效时保留原文并明确标记 invalid，仍只给 planner 一次最终作答机会；基础设施错误保持 fatal。该复核判断是建议，最终 planner 可以维持、修改答案或弃答。
 
-默认 H0 不增加模块工具或自动复核。catalog 中 `planner.module.verification_basic` 仍是一次单坐标布尔干预，但其含义包含工具、状态、触发与预算控制；memory 的去冗余控制由 memory capability 承担，二者没有自动路由关系。
+默认 H0 不增加模块工具或自动复核。catalog 中 `planner.module.verification_basic` 仍是一次单坐标布尔干预，但其含义包含工具、状态、触发与预算控制；memory 的自动证据恢复独立执行，二者没有自动路由关系。
 
-轨迹记录 `verification_capability`、`verification_gate`、`candidate_answer` 事件、实际 `verification_request` / `verification`、`memory_control` 及两份最终账本；`planner_calls + verification_calls = model_calls`。原始请求、输出和未提交候选均保留，复核结果不会覆盖原始观察。
+轨迹记录 `verification_capability`、`verification_gate`、`candidate_answer` 事件、实际 `verification_request` / `verification`、`history_audit.memory` 及最终原始观察账本；`planner_calls + verification_calls = model_calls`。原始请求、输出和未提交候选均保留，复核结果不会覆盖原始观察。
 
 修改投影会改变实际模型输入与可保留的历史范围，下一次必须从 H0 开始重新进行完整 calibration/validation，不能复用旧投影下的 episode 作为新基线。正在运行的实验继续使用其冻结源码和原有投影。
 
@@ -339,7 +352,7 @@ extractor is used only for a terminal unresolved text reply without verification
 not intermediate recovery or the fixed post-audit final response.
 
 The completion policy is moha_pre_submit_verification_budget_v3, the verification
-policy is moha_answer_audit_gate_v3, and memory no-novelty control has its own v1 policy. These behavior/input
+policy is moha_answer_audit_gate_v3, and persistent memory uses moha_persistent_evidence_injection_v1. These behavior/input
 changes require a new full calibration from H0 before claiming new performance;
 old frozen trajectories and calibration results must not be relabeled or reused
 as results of this implementation.
@@ -350,3 +363,12 @@ The configured thinking mode may be set through
 --default-chat-template-kwargs '{"enable_thinking":false}' so the host does
 not need a Qwen-specific request field. Service changes require a fresh run;
 keep old trajectories and validate historical parsing offline.
+
+### Automatic evidence memory experiment identity
+
+The 2026-09-12 memory change supersedes callable two-ledger memory. Historical
+profiles/experiments still mean their frozen implementations. New module validation
+uses fresh H0 episodes, fixed source/runtime identities and the same model/media
+budgets. Tool-memory comparisons run the explicitly pinned pre-change source; they
+do not add a second implementation or mode to the current catalog. Capacity-limited
+restoration is reported separately and cannot establish that memory is unnecessary.

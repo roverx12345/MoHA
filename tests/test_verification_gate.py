@@ -99,8 +99,8 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(context["finalization"]["verification"]["audit"]["best_supported_option"], "A")
         self.assertEqual(result.events[-1]["kind"], "terminal")
 
-    def test_non_submitting_memory_loop_gets_step_fifteen_audit_and_sixteen_final(self):
-        messages = [observe(0), observe(3)] + [call("memory_read", {"ledger": "result"}, str(i)) for i in range(12)]
+    def test_non_submitting_search_loop_gets_step_fifteen_audit_and_sixteen_final(self):
+        messages = [observe(0), observe(3)] + [call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}, str(i)) for i in range(12)]
         messages += [audit(), final()]
         planner = Planner(messages)
         result = EpisodeRunner(Service(), planner).run(Harness(memory=True, verification=True, max_steps=16), sample("cal"), 0)
@@ -112,7 +112,7 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(len(json.loads(planner.calls[14]["messages"][1]["content"])["observations"]), 2)
         self.assertEqual(planner.calls[14]["tools"], [])
         self.assertEqual(planner.calls[15]["tools"], [])
-        self.assertTrue(any(e["kind"] == "memory_control" and e["no_novelty"] for e in result.events))
+        self.assertFalse(any(e["kind"] == "tool_call" and e["tool"].startswith("memory_") for e in result.events))
 
     def test_manual_verification_counts_once_and_blocks_following_tools_in_same_response(self):
         request = call("verify_fresh", {}, "verify")

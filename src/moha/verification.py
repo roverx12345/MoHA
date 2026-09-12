@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from .models import canonical
+from .memory import visible_records
 
 VERIFICATION_POLICY = "moha_answer_audit_gate_v3"
 VERIFICATION_CAPABILITY = {
@@ -28,24 +29,6 @@ diagnosis: nonempty explanation of the evidence and its limits.
 Your audit advises the final planner response; it does not commit an answer or require agreement."""
 
 
-def visible_records(messages):
-    """Take evidence from actual projected tool messages, not an audit archive."""
-    records = []
-    for message in messages:
-        if message.get("role") != "tool" or not isinstance(message.get("content"), str):
-            continue
-        try:
-            value = json.loads(message["content"])
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(value, dict) or value.get("isError"):
-            continue
-        if isinstance(value.get("observation"), dict):
-            records.append({"observation": copy.deepcopy(value["observation"]),
-                            "observation_context": copy.deepcopy(value.get("observation_context", {}))})
-        elif isinstance(value.get("result_memory"), list):
-            records.extend(copy.deepcopy(value["result_memory"]))
-    return records
 
 
 def verification_tool():

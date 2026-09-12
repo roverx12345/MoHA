@@ -10,9 +10,9 @@
 - Preserve the paper's shared H0, catalog-constrained single-coordinate proposals,
   calibration/validation separation, fixed-support observer probes, and validation
   gate. Diagnoses are hypotheses, not fixed intervention-routing rules.
-- Keep two Flat tools, plus module tools only when enabled: memory_read /
-  memory_note for memory and verify_fresh for verification. The user authorized
-  these native module tools in place of the separate MCP experiment.
+- Keep two Flat tools and verify_fresh only when verification is enabled.
+  The user authorized replacing callable memory tools with automatic persistent
+  evidence injection on 2026-09-12. Do not expose memory_read or memory_note.
   `observe(start_seconds, end_seconds, instruction, evidence_type, reference?)` selects
   exact valid source-time support, independent of search candidate IDs. Planner
   controls temporal scope; harness controls sampling and observer routing. Keep
@@ -38,10 +38,18 @@
   Omni uses Flat's instruction-only prompt and payload. Current observer audits
   retain instruction/evidence_type/reference; readers also accept immutable old
   typed requests. Do not rewrite historical requests to look like current ones.
-- Memory is an append-only result ledger and a separate working-note ledger.
-  Keep original observations, duplicate records, conflicts, scope and caveats.
-  Planner reads original records and writes notes explicitly; no summaries,
-  ranking, automatic merging or fixed early/recent memory selection.
+- Memory is an append-only archive of original perceptual observations. Preserve
+  duplicates, conflicts, scope and caveats. Automatically inject only records absent
+  from actual bounded history as user-role observation data before recent history.
+  Keep exact-copy deduplication in the view only; never merge conflicting claims,
+  summarize observations or retain planner notes. memory_basic remains one boolean
+  candidate; do not add a memory routing/selection catalog.
+  The restored block uses at most 6000 estimated tokens inside history_tokens.
+  Recompute history after reservation so newly evicted evidence is included too.
+  Restore the complete missing set, or keep ordinary bounded history and explicitly
+  report capacity limits. No relevance ranking or partial conflict selection.
+  Keep raw archives and per-call visibility/budget audits. H0 uses the unchanged
+  bounded-history path. Existing tool-memory runs retain their frozen implementation.
 - Verification is an answer-audit capability with one automatic pre-submit or
   two-call budget-floor trigger, at most one audit including manual verify_fresh,
   and exactly one final planner response afterward with all tools disabled.
@@ -53,12 +61,6 @@
   Request the support/assumptions/contradictions/best-option/diagnosis JSON audit;
   validate once, retain invalid raw output explicitly, and never retry the audit.
   The final planner may keep, revise or abstain; the audit cannot impose an answer.
-- Keep no-novelty control separate from memory storage and verification. Hash the
-  result and working ledgers independently. Repeated unchanged reads that remain
-  visible return no_novelty without a repeated ledger; two consecutive redundant
-  reads temporarily mask memory_read. A version change or loss of the original
-  payload from bounded context re-enables it. Preserve original ledgers and allow
-  explicit restoration after eviction; never map memory repetition to verification.
 - Commit coherent changes before real model calls. Both this checkout and the
   pinned runtime must be clean. Record source/runtime commits, input/config hashes,
   provider identities, command, environment, and output location for every run.

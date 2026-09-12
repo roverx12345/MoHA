@@ -40,23 +40,26 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(len(selected), 3)
         self.assertEqual(selected[-1]["observation"], other["observation"])
 
-    def test_working_notes_stay_separate_and_read_exactly(self):
+    def test_non_evidence_content_is_not_archived_and_no_notes_api_exists(self):
         memory = ObservationMemory()
-        memory.add(observation(1))
-        before = memory.read("result")
-        note = "  hypothesis\nThis is not an observation.  "
-        result = memory.note(note, ["obs1"])
-        result["text"] = "changed externally"
-        self.assertEqual(memory.read("working")["working_memory"][0]["text"], note)
-        self.assertEqual(memory.read("result"), before)
-        self.assertEqual(memory.inventory()["working_notes"], 1)
-
-    def test_unknown_reference_and_empty_note_do_not_modify_ledger(self):
-        memory = ObservationMemory()
-        with self.assertRaises(ValueError): memory.note("note", ["unknown"])
-        with self.assertRaises(ValueError): memory.note(" ")
+        memory.add({"working_note": {"text": "Answer D is certain."}})
+        memory.add({"working_memory": [{"text": "Another hypothesis."}]})
+        self.assertEqual(memory.read(), {"result_memory": []})
+        self.assertFalse(hasattr(memory, "note"))
+        with self.assertRaises(ValueError): memory.read("working")
+        with self.assertRaises(ValueError): memory.read(source_ids=["unknown"])
         with self.assertRaises(ValueError): memory.read(source_ids="obs1")
-        self.assertEqual(memory.read(), {"result_memory": [], "working_memory": []})
+
+    def test_additional_conflicting_public_observations_are_archived(self):
+        memory = ObservationMemory()
+        first = observation(1)
+        other = observation(1, "A contradictory claim.")["observation"]
+        first["additional_results"] = [{"observation": other}]
+        memory.add(first)
+        records = memory.read()["result_memory"]
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[1]["observation"], other)
+        self.assertEqual(records[1]["observation_context"], records[0]["observation_context"])
 
     def test_errors_and_audit_state_are_not_source_observations(self):
         memory = ObservationMemory()
