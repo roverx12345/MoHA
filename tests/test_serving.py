@@ -29,6 +29,8 @@ class ServingTests(unittest.TestCase):
             self.assertEqual(loader, {"video": {"num_frames": frames}})
             self.assertEqual(plan["host_max_frames"], frames)
             self.assertEqual(command[command.index("--max-model-len") + 1], "32768")
+            self.assertEqual(command[command.index("--max-num-seqs") + 1], "1")
+            self.assertEqual(plan["max_num_seqs"], 1)
             self.assertNotIn("--mm-processor-kwargs", command)
             self.assertEqual(self.config, before)
 
@@ -44,6 +46,12 @@ class ServingTests(unittest.TestCase):
             self.config["budget"]["f_view"] = value
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "budget.f_view"):
                 self.plan()
+
+    def test_omni_scheduler_is_serial_and_rejects_invalid_limits(self):
+        self.assertEqual(self.plan(max_num_seqs=1)["max_num_seqs"], 1)
+        for value in (None, True, 0, -1, 1.0, "1"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "max_num_seqs"):
+                self.plan(max_num_seqs=value)
 
     def test_dry_run_never_starts_server_or_writes_record_or_discloses_credentials(self):
         self.config["observer"]["key"] = {"file": "/private/secret-sentinel", "field": "secret-field"}

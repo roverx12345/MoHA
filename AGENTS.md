@@ -85,7 +85,9 @@
   activate and recording their original source and artifact hashes in a new run.
 - Use one episode batch path for one or multiple endpoint lanes. Keep a separate
   service/client per lane, stable sample-index assignment, and at most one active
-  episode per lane. Only the coordinator makes calibration decisions. Stop new
+  episode per lane. The shared Qwen3-Omni vLLM server must use max_num_seqs=1;
+  heterogeneous concurrent multimodal requests can corrupt placeholder alignment.
+  Only the coordinator makes calibration decisions. Stop new
   submissions on errors, preserve completed caches, and probe on the sample's lane.
 - Use bounded, independent Judge workers for trace diagnoses (default eight).
   Keep probe services/verdict clients serial within the original episode lane;

@@ -22,7 +22,7 @@ def media_io_kwargs(config):
 
 
 def launch_plan(config, *, vllm_bin, model_path, gpu, host="127.0.0.1",
-                endpoint_index=0, max_model_len=32768):
+                endpoint_index=0, max_model_len=32768, max_num_seqs=1):
     observer = config["observer"]
     if observer["backend"] != "qwen3omni":
         raise ValueError("this launcher is for the deployed Qwen3-Omni vLLM-Omni stack")
@@ -39,16 +39,19 @@ def launch_plan(config, *, vllm_bin, model_path, gpu, host="127.0.0.1",
             or endpoint.path not in ("", "/v1")):
         raise ValueError("a local Omni endpoint requires http, an explicit port, and no credentials")
     positive_int(max_model_len, "max_model_len")
+    positive_int(max_num_seqs, "max_num_seqs")
     loader = media_io_kwargs(config)
     command = [str(vllm_bin), "serve", str(model_path), "--omni", "--host", host,
                "--port", str(endpoint.port), "--max-model-len", str(max_model_len),
-               "--enforce-eager", "--served-model-name", observer["model"],
+               "--max-num-seqs", str(max_num_seqs), "--enforce-eager",
+               "--served-model-name", observer["model"],
                "--media-io-kwargs", json.dumps(loader, separators=(",", ":"))]
     return {"command": command, "environment": {"CUDA_VISIBLE_DEVICES": gpu,
             "HF_HUB_OFFLINE": "1", "PYTHONUNBUFFERED": "1"},
             "observer_endpoint": endpoints[endpoint_index], "media_io_kwargs": loader,
             "host_max_frames": config["budget"]["f_view"],
-            "max_model_len": max_model_len, "server_verified": False}
+            "max_model_len": max_model_len, "max_num_seqs": max_num_seqs,
+            "server_verified": False}
 
 
 def main(argv=None):
@@ -60,13 +63,15 @@ def main(argv=None):
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--endpoint-index", type=int, default=0)
     parser.add_argument("--max-model-len", type=int, default=32768)
+    parser.add_argument("--max-num-seqs", type=int, default=1,
+                        help="Serialize heterogeneous Omni requests to avoid unsafe multimodal batching")
     parser.add_argument("--launch-record", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     config = read_object(args.config)
     plan = launch_plan(config, vllm_bin=args.vllm_bin, model_path=args.model_path,
         gpu=args.gpu, host=args.host, endpoint_index=args.endpoint_index,
-        max_model_len=args.max_model_len)
+        max_model_len=args.max_model_len, max_num_seqs=args.max_num_seqs)
     plan.update(config_sha256=hashlib.sha256(args.config.read_bytes()).hexdigest(),
                 config_path=str(args.config.resolve()))
     if args.dry_run:
