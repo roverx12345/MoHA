@@ -92,7 +92,7 @@ class VerificationGateTests(unittest.TestCase):
         fresh = json.loads(planner.calls[7]["messages"][1]["content"])
         self.assertEqual(fresh["candidate_answer"]["answer"], "B")
         last = planner.calls[-1]
-        self.assertEqual((last["tools"], last["tool_choice"]), ([], "none"))
+        self.assertEqual((last["tools"], last["tool_choice"]), ([], "auto"))
         context = json.loads(last["messages"][-1]["content"])
         self.assertEqual(context["remaining_planner_calls"], 1)
         self.assertEqual(context["finalization"]["observations"], fresh["observations"])

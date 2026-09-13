@@ -33,7 +33,7 @@ class TerminalRecoveryTests(unittest.TestCase):
                 self.assertEqual(result.usage["model_calls"], 2)
                 self.assertFalse(any(e["kind"] == "error" for e in result.events))
                 self.assertEqual(len([e for e in result.events if e["kind"] == "answer_recovery"]), 1)
-                self.assertEqual(planner.calls[-1]["tool_choice"], "none")
+                self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
                 self.assertIn(json.dumps(value), str(planner.calls[-1]["messages"]))
 
     def test_nonterminal_reply_can_continue_observing_before_final_answer(self):
@@ -48,7 +48,7 @@ class TerminalRecoveryTests(unittest.TestCase):
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
         self.assertEqual(result.usage["model_calls"], 3)
         self.assertEqual(result.usage["observer_calls"], 1)
-        self.assertEqual([c["tool_choice"] for c in planner.calls], ["auto", "auto", "none"])
+        self.assertEqual([c["tool_choice"] for c in planner.calls], ["auto", "auto", "auto"])
         self.assertIn("planner_output_feedback", str(planner.calls[1]["messages"]))
 
     def test_invalid_until_exhaustion_has_no_free_retry_or_fake_abstention(self):
@@ -59,7 +59,7 @@ class TerminalRecoveryTests(unittest.TestCase):
         self.assertEqual(result.usage["model_calls"], 3)
         self.assertEqual(len([e for e in result.events if e["kind"] == "answer_recovery"]), 2)
         self.assertEqual(len([e for e in result.events if e["kind"] == "terminal"]), 1)
-        self.assertEqual(planner.calls[-1]["tool_choice"], "none")
+        self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
 
     def test_empty_response_cannot_reuse_answer_cue_from_earlier_tool_turn(self):
         first = call("memory_read", {})
@@ -81,7 +81,7 @@ class TerminalRecoveryTests(unittest.TestCase):
         self.assertEqual(result.usage["model_calls"], 4)
         self.assertEqual(result.usage["planner_calls"], 3)
         self.assertEqual(result.usage["verification_calls"], 1)
-        self.assertEqual(planner.calls[-1]["tool_choice"], "none")
+        self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
 
     def test_explicit_final_or_abstention_still_finishes_immediately(self):
         for content, status, answer in [
@@ -136,9 +136,9 @@ class RecoveryWireTests(unittest.TestCase):
         result = EpisodeRunner(Service(), planner).run(Harness(max_steps=2), sample("cal"), 0)
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
         self.assertEqual(len(transport.calls), 2)
-        self.assertEqual(transport.calls[-1]["tool_choice"], "none")
+        self.assertNotIn("tool_choice", transport.calls[-1])
         self.assertNotIn("response_format", transport.calls[0])
-        self.assertEqual(transport.calls[-1]["response_format"]["type"], "json_schema")
+        self.assertNotIn("response_format", transport.calls[-1])
         self.assertEqual(result.usage["model_calls"], 2)
         self.assertEqual(next(e for e in result.events if e["kind"] == "answer_recovery")["reason"], "length_truncated")
         self.assertEqual([e for e in result.events if e["kind"] == "planner"][0]["metadata"]["finish_reason"], "length")

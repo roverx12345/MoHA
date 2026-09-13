@@ -95,7 +95,7 @@ GPT-5.5 的新实验模板显式设置 `search.max_rounds=5`，即最多五轮�
 
 所有模型栈从同一 H0 开始：search/observe 两个语义工具、一个 Omni observer。Planner 支持模块与 observer 执行策略由目录中的可执行候选定义。
 
-Planner 系统提示按当前 Harness 组装：H0 只包含 search/observe、证据使用和最终作答规则；overview、memory、verification 的说明分别只在对应模块开启时加入，与工具和状态的开关一致。关闭模块时不保留“如果启用”的说明。实际提示词保存在原始消息中，轨迹用 `planner_prompt_policy: moha_enabled_module_prompt_v1` 标记此规则。该提示词变化需要新建运行并从 H0 完整校准，不能复用旧提示词生成的 episode 作为新基线。
+Planner 系统提示按当前 Harness 组装：H0 只包含 search/observe、证据使用和简短的预算提醒，不规定最终回答必须使用文本、JSON 或工具调用中的哪一种载体；overview、memory、verification 的说明分别只在对应模块开启时加入，与工具和状态的开关一致。关闭模块时不保留“如果启用”的说明。实际提示词保存在原始消息中，轨迹用 `planner_prompt_policy: moha_enabled_module_prompt_v2` 标记此规则。该提示词变化需要新建运行并从 H0 完整校准，不能复用旧提示词生成的 episode 作为新基线。
 
 Planner 用 `observe(start_seconds, end_seconds, instruction, evidence_type)` 直接选择源视频时间范围，并给 Observer 一条具体指令或问题。`instruction` 写明观察对象和需要报告的可见／可听事实，必要时要求时间、顺序和不确定性；`evidence_type` 保留现有证据类型和路由，`reference` 仅在 `relation` 时可选。Omni 实际请求也使用 `instruction`，通过 Flat 的专用观察提示执行；MoHA 审计回执保存同名指令与类型，固定支持探针读取这些字段，同时兼容旧记录。检索候选只提供定位线索：可以沿用其起止时间、扩展前后文，也可以按题目时间直接观察，无需先 search 或提供 `candidate_id`。例如检索命中 107–109 秒后，可以请求：
 
@@ -113,7 +113,7 @@ Planner 用 `observe(start_seconds, end_seconds, instruction, evidence_type)` �
 
 `context.py` 的 `moha_public_tool_results_v5` 统一实际工具返回和历史输入。初始输入仅保留题目、视频时长和是否有音轨；工具反馈保留检索候选、当前/已观察窗口、完整观察事实与不确定性、窗口/采样范围和可操作错误。去除存储元数据后，相同观察副本去重，冲突证据保留。轨迹中 `tool_result.result` 就是公开返回，执行回执另存 `tool_result.audit`；感知预算、provider/请求哈希等仍可从独立审计与感知记录追溯。公开返回不含 `player_state`、`backend_result` 或预算 ledger。剩余模型调用数、启用模块及其可用状态仍是模型可用的行动约束。
 
-最终调用清空工具定义，并由固定 Flat adapter 在 HTTP 请求体显式发送 `tool_choice: "none"`，同时用严格 JSON Schema 将输出限制为 `status` 与当前选项标签，避免长篇分析耗尽输出额度。若服务端仍把完整终止答案编码为唯一的未声明 `answer`/`final_answer` 调用，runtime 只规范化其严格载荷而不执行工具；混合调用、额外字段和含糊值仍按协议拒绝。审查请求本身保持文本 JSON，不增加 provider 结构化输出约束。完整原始工具结果和实际投影后的每轮输入分别保存。
+最终调用清空可执行工具定义；固定 Flat adapter 在 HTTP 请求体中省略 `tools`、`tool_choice` 和 provider 专属的 `response_format`，prompt 也不要求模型必须避开工具调用。若服务端把完整终止答案编码为唯一的未声明 `submit_answer`、`answer` 或 `final_answer` 调用，runtime 将其严格载荷作为模型回答规范化，不执行该调用；混合调用、额外字段和含糊值仍按协议拒绝。审查请求保持普通文本 JSON。完整原始工具结果和实际投影后的每轮输入分别保存。
 
 工具名和输入投影改变后，必须创建新实验并从 H0 做完整校准，不能把旧接口的 H0 或候选 episode 当作新基线。既有冻结运行保持原接口。
 
@@ -257,7 +257,7 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 
 `verification_basic` 是完整的 answer-audit capability：`trigger=pre_submit_or_budget_floor`、`max_verifications=1`、`reserve_steps=2`、`post_verify_mode=finalize_only`。planner 提交有效候选答案或明确弃答时，harness 暂不提交，先做一次独立复核，再给 planner 恰好一轮最终回答。若 planner 始终不提交，剩余两次调用时自动进入复核。手动 `verify_fresh(diagnostic_question?, source_ids?)` 可以提前进入同一阶段，也占用这唯一一次复核额度；完成后不会再自动复核。
 
-16-call 示例：前 14 次用于正常 planning/perception，第 15 次自动复核，第 16 次最终作答；若第 7 次提前提交候选，第 8 次复核、第 9 次最终作答后结束。所有调用均在原 `max_steps` 内；verification 至少需要两次总调用。复核后工具列表为空且 tool_choice=none，runtime 也拒绝执行 provider 仍返回的工具调用，包括同一批请求中排在 verify_fresh 后面的操作。复核后没有 corrective perception，也不调用额外的答案提取模型；最终回答无效时记录 invalid_final_answer，不赠送修复轮次；即使总预算尚有余量，该最终阶段也只允许一轮回答。
+16-call 示例：前 14 次用于正常 planning/perception，第 15 次自动复核，第 16 次最终作答；若第 7 次提前提交候选，第 8 次复核、第 9 次最终作答后结束。所有调用均在原 `max_steps` 内；verification 至少需要两次总调用。复核后的最终请求不提供工具定义；runtime 接收严格合法的终止答案调用，但不执行 provider 返回的任何调用，包括同一批请求中排在 verify_fresh 后面的操作。复核后没有 corrective perception，也不调用额外的答案提取模型；最终回答无效时记录 invalid_final_answer，不赠送修复轮次；即使总预算尚有余量，该最终阶段也只允许一轮回答。
 
 复核输入为两个纯文本消息：题目、完整选项、候选答案、当前可用原始观察及其 missing/uncertainty/窗口、明确标为 unverified 的 planner 请求和最近一条可见文本假设。没有工作笔记账本、旧对话列表、视频截图或参考答案。source_ids 只标记关注来源，不过滤其他可用的相反证据。未启用 memory 时，仅使用触发时的实际历史投影可见观察；最终 planner 获得同一份原始观察和复核结果。
 
@@ -351,14 +351,18 @@ reply, so an empty reply cannot reuse an old answer cue. A configured evaluation
 extractor is used only for a terminal unresolved text reply without verification,
 not intermediate recovery or the fixed post-audit final response.
 
-The completion policy is moha_pre_submit_verification_budget_v3, the verification
-policy is moha_answer_audit_gate_v3, and persistent memory uses moha_persistent_evidence_injection_v1. These behavior/input
+The completion policy is moha_pre_submit_verification_budget_v5, the prompt policy is
+moha_enabled_module_prompt_v2, the answer parsing policy is moha_terminal_json_v3,
+the verification policy is moha_answer_audit_gate_v3, and persistent memory uses
+moha_persistent_evidence_injection_v1. These behavior/input
 changes require a new full calibration from H0 before claiming new performance;
 old frozen trajectories and calibration results must not be relabeled or reused
 as results of this implementation.
 
-For Qwen served by vLLM, configure the server to honor the existing
-tool_choice=none request with --exclude-tools-when-tool-choice-none.
+For self-hosted Qwen served by vLLM, `--exclude-tools-when-tool-choice-none` can
+enforce a text-only request when desired. A remote proxy may not expose that server
+option, so the terminal contract accepts either ordinary model text or a strict
+terminal-answer call and does not depend on this flag.
 The configured thinking mode may be set through
 --default-chat-template-kwargs '{"enable_thinking":false}' so the host does
 not need a Qwen-specific request field. Service changes require a fresh run;

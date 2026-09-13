@@ -6,32 +6,7 @@ import re
 from collections.abc import Collection
 
 
-ANSWER_PARSING_POLICY = "moha_terminal_json_v2"
-
-
-def final_answer_response_format(option_labels: Collection[str]) -> dict:
-    """Constrain a no-tool terminal call to the two accepted answer shapes."""
-    labels = list(option_labels)
-    if not labels or any(not isinstance(label, str) or not label for label in labels):
-        raise ValueError("option labels must be non-empty strings")
-    if len(set(labels)) != len(labels):
-        raise ValueError("option labels must be unique")
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "moha_terminal_answer",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "enum": ["answered", "abstained"]},
-                    "answer": {"anyOf": [{"type": "string", "enum": labels}, {"type": "null"}]},
-                },
-                "required": ["status", "answer"],
-                "additionalProperties": False,
-            },
-        },
-    }
+ANSWER_PARSING_POLICY = "moha_terminal_json_v3"
 
 
 def _unique_object(pairs):
@@ -87,12 +62,12 @@ def terminal_tool_call_answer(name: object, arguments: object,
                               option_labels: Collection[str]) -> dict | None:
     """Recover one explicit answer emitted through an unadvertised terminal tool.
 
-    Some OpenAI-compatible models serialize a requested final answer as an
-    ``answer`` or ``final_answer`` tool call even when that tool was never
-    advertised. This recognizes only the exact terminal payload and never
-    executes the hallucinated tool.
+    Some OpenAI-compatible models serialize a requested final answer as a
+    ``submit_answer``, ``answer`` or ``final_answer`` tool call even when that
+    tool was never advertised. This recognizes only the exact terminal payload
+    and never executes the call.
     """
-    if name not in {"answer", "final_answer"}:
+    if name not in {"submit_answer", "answer", "final_answer"}:
         return None
     if isinstance(arguments, str):
         try:
@@ -103,10 +78,12 @@ def terminal_tool_call_answer(name: object, arguments: object,
         value = arguments
     else:
         return None
-    if set(value) != {"status", "answer"}:
+    fields = set(value)
+    if fields not in ({"status", "answer"}, {"status"}):
         return None
-    status, answer = value["status"], value["answer"]
-    if status == "answered" and isinstance(answer, str) and answer in option_labels:
+    status, answer = value["status"], value.get("answer")
+    if fields == {"status", "answer"} and status == "answered" \
+            and isinstance(answer, str) and answer in option_labels:
         return {"status": "answered", "answer": answer}
     # Qwen's XML-to-tool normalization represents an empty null parameter as
     # an empty string. The explicit abstained status keeps this unambiguous.

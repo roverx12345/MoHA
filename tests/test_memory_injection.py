@@ -174,5 +174,5 @@ class PersistentMemoryWireTests(unittest.TestCase):
         restored = json.loads(wire["messages"][2]["content"])["evidence_memory"]
         self.assertEqual(restored, result.raw["memory"]["result_memory"])
         self.assertFalse(wire.get("tools"))
-        self.assertEqual(wire["tool_choice"], "none")
+        self.assertNotIn("tool_choice", wire)
         self.assertEqual(sum("A person jumps." in (m.get("content") or "") for m in wire["messages"]), 1)

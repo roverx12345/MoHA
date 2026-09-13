@@ -87,7 +87,7 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(projected["audit"], json.loads(text))
         self.assertNotIn("diagnosis", projected)
         self.assertNotIn("receipt", projected)
-        self.assertEqual(planner.calls[-1]["tool_choice"], "none")
+        self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
         self.assertNotIn("evidence_ledger", result.raw)
 
     def test_budget_floor_audit_preserves_reserved_final_call(self):
@@ -98,7 +98,7 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(result.status, "abstained", result.raw)
         self.assertEqual(result.usage["model_calls"], 3)
         self.assertEqual(result.usage["verification_calls"], 1)
-        self.assertEqual(planner.calls[-1]["tool_choice"], "none")
+        self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
         self.assertEqual(result.raw["verification_gate"]["trigger"], "budget_floor")
         self.assertEqual(planner.calls[-1]["tools"], [])
 
@@ -171,5 +171,5 @@ class VerificationWireTests(unittest.TestCase):
         self.assertIsNone(payload["planner_request"])
         self.assertEqual(result.usage["verification_calls"], 1)
         self.assertFalse(transport.calls[-1].get("tools"))
-        self.assertEqual(transport.calls[-1]["tool_choice"], "none")
-        self.assertEqual(transport.calls[-1]["response_format"]["type"], "json_schema")
+        self.assertNotIn("tool_choice", transport.calls[-1])
+        self.assertNotIn("response_format", transport.calls[-1])

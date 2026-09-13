@@ -1,26 +1,21 @@
 """Terminal parsing regressions; no provider or model-specific behavior."""
 import unittest
 
-from moha.answers import (final_answer_response_format, terminal_json_answer,
-                          terminal_tool_call_answer)
+from moha.answers import terminal_json_answer, terminal_tool_call_answer
 
 
 class TerminalAnswerTests(unittest.TestCase):
-    def test_final_response_format_constrains_status_and_label(self):
-        value = final_answer_response_format("ABC")
-        schema = value["json_schema"]["schema"]
-        self.assertEqual(value["type"], "json_schema")
-        self.assertEqual(schema["required"], ["status", "answer"])
-        self.assertEqual(schema["properties"]["answer"]["anyOf"][0]["enum"], ["A", "B", "C"])
-        self.assertFalse(schema["additionalProperties"])
-
     def test_explicit_unadvertised_terminal_tool_is_recovered(self):
         for name, arguments, expected in [
+            ("submit_answer", '{"status":"answered","answer":"C"}',
+             {"status": "answered", "answer": "C"}),
             ("answer", '{"status":"answered","answer":"B"}',
              {"status": "answered", "answer": "B"}),
             ("final_answer", {"status": "abstained", "answer": None},
              {"status": "abstained", "answer": None}),
             ("final_answer", {"status": "abstained", "answer": ""},
+             {"status": "abstained", "answer": None}),
+            ("submit_answer", {"status": "abstained"},
              {"status": "abstained", "answer": None}),
         ]:
             with self.subTest(name=name, arguments=arguments):

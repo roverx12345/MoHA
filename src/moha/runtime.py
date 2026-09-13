@@ -9,13 +9,13 @@ from .context import PLANNER_CONTEXT_POLICY, bounded_history, tool_context, fiel
 from .memory import MEMORY_POLICY, MEMORY_CAPABILITY, ObservationMemory, persistent_history
 from .verification import (VERIFICATION_POLICY, VERIFICATION_CAPABILITY, diagnosis_messages,
                            verification_tool, visible_records, parse_audit)
-from .answers import (ANSWER_PARSING_POLICY, final_answer_response_format,
-                      terminal_json_answer, terminal_tool_call_answer)
+from .answers import (ANSWER_PARSING_POLICY, terminal_json_answer,
+                      terminal_tool_call_answer)
 from .failures import ExecutionFailure, classify_failure
 
 
-PLANNER_COMPLETION_POLICY = "moha_pre_submit_verification_budget_v4"
-PLANNER_PROMPT_POLICY = "moha_enabled_module_prompt_v1"
+PLANNER_COMPLETION_POLICY = "moha_pre_submit_verification_budget_v5"
+PLANNER_PROMPT_POLICY = "moha_enabled_module_prompt_v2"
 
 
 PLANNER_PROMPT = """Answer the video question using search and observe.
@@ -45,15 +45,9 @@ VERIFICATION_PROMPT = """Verification diagnoses are advisory.
 The harness audits your candidate answer once before
 commitment, or automatically when two model calls remain. Calling verify_fresh enters
 this audit stage early. The audit uses one shared call and is followed by exactly one
-final answer or abstention call with all tools disabled; there is no new perception
-after the audit. Candidate answers and your hypotheses are unverified, not evidence."""
+final response. Candidate answers and your hypotheses are unverified, not evidence."""
 
-FINAL_ANSWER_PROMPT = """Resolve uncertainty using your judgment within
-the remaining budget. When ready, return a final JSON object with status 'answered'
-and answer equal to an option label, or status 'abstained' and answer null.
-The last remaining planner call is reserved for a final answer or explicit abstention;
-no tools can execute on that call. The final answer is an assistant message, not a
-tool call."""
+FINAL_ANSWER_PROMPT = """Resolve uncertainty using your judgment within the remaining budget."""
 
 
 def planner_prompt(harness: Harness):
@@ -225,9 +219,8 @@ class EpisodeRunner:
                 finalization = {"mode": "finalize_only", "candidate_answer": copy.deepcopy(candidate),
                                 "observations": json.loads(fresh[1]["content"])["observations"],
                                 "verification": tool_context(result, keep_state=False),
-                                "instruction": "Return your final answer or explicit abstention now. No tools or further "
-                                               "perception are available. Evaluate the original evidence and this audit; "
-                                               "you may keep or revise your candidate. An invalid audit is not usable "
+                                "instruction": "Give your final response using the original evidence and this audit. "
+                                               "You may keep or revise your candidate. An invalid audit is not usable "
                                                "verification and must not be treated as evidence."}
                 return result
 
@@ -246,9 +239,7 @@ class EpisodeRunner:
                 context = {"remaining_planner_calls": 1 if verification_done else harness.max_steps - used_calls - int(harness.verification),
                            "remaining_model_calls": harness.max_steps - used_calls}
                 if final_call:
-                    context["final_answer_required"] = (
-                        "This is the final planner response. Return a final answer or explicit abstention "
-                        "using the available evidence. Tools are disabled; no further observations can execute.")
+                    context["final_answer_required"] = True
                 if harness.verification:
                     context["verification_gate"] = {**VERIFICATION_CAPABILITY, "performed": verification_done}
                 if finalization is not None:
@@ -264,10 +255,7 @@ class EpisodeRunner:
                      visible_observations=visible_observations(projected), tools=call_tools)
                 used_calls += 1
                 response = self.planner.call(messages=projected, tools=call_tools,
-                                             tool_choice="none" if final_call else "auto",
-                                             parallel_tool_calls=False,
-                                             **({"response_format": final_answer_response_format(sample.task["options"])}
-                                                if final_call else {}))
+                                             tool_choice="auto", parallel_tool_calls=False)
                 message = response.message()
                 turn_start = len(messages)
                 messages.append(message)
