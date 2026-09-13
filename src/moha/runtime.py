@@ -14,7 +14,7 @@ from .answers import (ANSWER_PARSING_POLICY, terminal_json_answer,
 from .failures import ExecutionFailure, classify_failure
 
 
-PLANNER_COMPLETION_POLICY = "moha_pre_submit_verification_budget_v5"
+PLANNER_COMPLETION_POLICY = "moha_pre_submit_verification_budget_v6"
 PLANNER_PROMPT_POLICY = "moha_enabled_module_prompt_v2"
 
 
@@ -193,7 +193,7 @@ class EpisodeRunner:
                 arguments = arguments or {}
                 if set(arguments) - {"diagnostic_question", "source_ids"}:
                     raise ValueError("unknown verification argument")
-                records = memory.read("result")["result_memory"] if harness.memory else visible_records(available_messages)
+                records = visible_records(available_messages)
                 hypotheses = next((m["content"] for m in reversed(available_messages)
                                    if m.get("role") == "assistant" and isinstance(m.get("content"), str)
                                    and m["content"].strip()), None)
@@ -212,7 +212,10 @@ class EpisodeRunner:
                 try:
                     if diagnosis.tool_calls:
                         raise ValueError("audit returned tool calls during the text-only stage")
-                    result.update(audit=parse_audit(result["diagnosis"], sample.task["options"]), audit_status="valid")
+                    source_ids = {r["observation"].get("observation_id") for r in records}
+                    source_ids.discard(None)
+                    result.update(audit=parse_audit(result["diagnosis"], sample.task["options"], source_ids),
+                                  audit_status="valid")
                 except (ValueError, TypeError) as exc:
                     result.update(audit=None, audit_status="invalid", isError=True, error=str(exc))
                 raw["verification_gate"]["audit_status"] = result["audit_status"]

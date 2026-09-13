@@ -2,6 +2,7 @@ import copy
 import json
 import unittest
 from unittest.mock import patch
+from moha.context import bounded_history
 from moha.models import Harness
 from moha.runtime import EpisodeRunner
 from moha.verification import diagnosis_messages
@@ -12,7 +13,7 @@ from test_verification_gate import audit as audit_response
 
 
 class DiagnosisInputTests(unittest.TestCase):
-    def test_fresh_text_keeps_options_and_conflicts_without_notes_goals_or_media(self):
+    def test_fresh_text_keeps_options_conflicts_and_source_context_without_notes_or_media(self):
         from moha.memory import ObservationMemory
         memory = ObservationMemory()
         first = observation(1)
@@ -21,15 +22,19 @@ class DiagnosisInputTests(unittest.TestCase):
         other["observation"]["facts"][0]["fact"] = "A conflicting description."
         memory.add(other)
         memory.add({"working_note": {"text": "WORKING_SENTINEL"}})
+        records = memory.read("result")["result_memory"]
         messages = diagnosis_messages({"question": "Why?", "options": {"A": "OPTION_SENTINEL"}},
-            memory.read("result")["result_memory"], "Assess the disagreement.")
+            records, "Assess the disagreement.")
         self.assertEqual([x["role"] for x in messages], ["system", "user"])
         payload = json.loads(messages[1]["content"])
         self.assertEqual(len(payload["observations"]), 2)
         self.assertEqual(payload["observations"][0]["observation"], first["observation"])
+        self.assertEqual(payload["observations"][0]["observation_context"],
+                         records[0]["observation_context"])
         self.assertEqual(payload["options"], {"A": "OPTION_SENTINEL"})
         self.assertEqual(payload["planner_request"], {"text": "Assess the disagreement.", "status": "unverified"})
-        for forbidden in ["WORKING_SENTINEL", "What happened before?", "image_url"]:
+        self.assertIn("What happened before?", str(messages))
+        for forbidden in ["WORKING_SENTINEL", "image_url"]:
             self.assertNotIn(forbidden, str(messages))
         self.assertEqual(diagnosis_messages({"question": "Why?"}, [], source_ids=[])[1]["role"], "user")
         with self.assertRaises(ValueError): diagnosis_messages({"question": "Why?"}, [], source_ids=["missing"])
@@ -78,7 +83,7 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(fresh["tools"], [])
         self.assertEqual(fresh["tool_choice"], "none")
         self.assertNotIn("WORKING_SENTINEL", str(fresh))
-        self.assertNotIn("GOAL_SENTINEL", str(fresh))
+        self.assertIn("GOAL_SENTINEL", str(fresh))
         event = next(e for e in result.events if e["kind"] == "tool_result" and e["tool"] == "verify_fresh")
         self.assertEqual(event["result"]["audit"], json.loads(text))
         audit_event = next(e for e in result.events if e["kind"] == "verification")
@@ -122,6 +127,33 @@ class NativeVerificationTests(unittest.TestCase):
             fresh = planner.calls[3]["messages"]
             self.assertIn("Evidence 10", str(fresh))
             self.assertEqual("Evidence 0" in str(fresh), enabled)
+
+    def test_verification_does_not_bypass_failed_memory_injection(self):
+        class Scoped(Service):
+            def inspect_window(self, session_id, **kwargs):
+                r = super().inspect_window(session_id, **kwargs)
+                t = int(kwargs["start_seconds"])
+                r["observation"]["observation_id"] = f"obs{t}"
+                r["observation"]["facts"][0]["fact"] = f"Evidence {t}"
+                return r
+
+        def capacity_limited(messages, memory, *, token_limit, max_turns):
+            projected, result = bounded_history(messages, token_limit=token_limit, max_turns=max_turns)
+            result["memory"] = {"capacity_limited": True, "status": "memory_capacity_exceeded"}
+            return projected, result
+
+        messages = [call("observe", {"start_seconds": i, "end_seconds": i+5,
+                    "instruction": 'action', "evidence_type": 'general'}, str(i)) for i in [0, 10]]
+        messages += [call("verify_fresh", {}), audit_response(),
+                     {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]
+        planner = Planner(messages)
+        with patch("moha.runtime.persistent_history", side_effect=capacity_limited):
+            result = EpisodeRunner(Scoped(), planner).run(
+                Harness(memory=True, verification=True, max_steps=5, history_turns=1), sample("cal"), 0)
+        self.assertEqual(result.status, "completed", result.raw)
+        fresh = planner.calls[3]["messages"]
+        self.assertIn("Evidence 10", str(fresh))
+        self.assertNotIn("Evidence 0", str(fresh))
 
     def test_diagnosis_provider_failure_is_not_silently_retried(self):
         from flat.core.errors import ProviderError

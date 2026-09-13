@@ -49,7 +49,7 @@ def catalog() -> dict[str, Intervention]:
     modules = {
         "overview": ("overview", "Prefetch a navigation-only overview before planning; it consumes perception budget and supplies coarse regions, not answer evidence."),
         "memory_basic": ("memory", "Automatically restore original perceptual evidence omitted from bounded history, before recent interaction. No memory tools or planner notes. Use at most 6000 tokens within the shared history allowance; restore the complete missing set or explicitly report capacity limits. Preserve scoped claims and conflicts, deduplicating only exact copies in the view."),
-        "verification_basic": ("verification", "Enable one evidence-grounded answer-audit capability: intercept a submitted candidate or reserve the last two shared model calls, audit once, then finalize with all tools disabled. verify_fresh may enter this stage early. No extra compute or corrective perception; the final planner may answer, revise or abstain. Without memory, audit only currently visible evidence."),
+        "verification_basic": ("verification", "Enable one evidence-grounded, option-wise answer audit: intercept a submitted candidate or reserve the last two shared model calls, compare every complete option against the observations visible in the actual planner context, then finalize with all tools disabled. verify_fresh may enter this stage early. No direct memory access, extra compute or corrective perception; the final planner may answer, revise or abstain."),
         "retrieval_basic": ("retrieval_guard", "Enable the existing retrieval-stagnation intervention."),
     }
     items = [Intervention(f"planner.module.{key}", field, True, text)

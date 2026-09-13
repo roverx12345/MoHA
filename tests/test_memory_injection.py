@@ -130,7 +130,7 @@ class NativePersistentMemoryTests(unittest.TestCase):
         self.assertEqual(other.status, "completed", other.raw)
         self.assertNotIn("A person jumps.", str(without.calls[-1]["messages"]))
 
-    def test_verifier_still_uses_archive_and_finalization_does_not_double_inject(self):
+    def test_verifier_uses_injected_records_and_finalization_does_not_double_inject(self):
         planner = Planner([observe(), call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}),
                            final(), audit(), final()])
         result = EpisodeRunner(Service(), planner).run(

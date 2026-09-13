@@ -21,8 +21,12 @@ def final(label="A"):
 
 def audit(status="insufficient", label=None):
     return {"role": "assistant", "content": json.dumps({"support_status": status,
-        "unsupported_assumptions": ["The inference is not established by the observation."],
-        "contradictory_evidence": [], "best_supported_option": label,
+        "option_checks": [{"label": option,
+                           "status": "supported" if option == label else "insufficient",
+                           "evidence_ids": [],
+                           "reason": "The supplied observations provide limited support."}
+                          for option in ("A", "B")],
+        "best_supported_option": label,
         "diagnosis": "Use only the original scoped observations; the inference may be unsupported."})}
 
 
@@ -67,13 +71,38 @@ class AuditContractTests(unittest.TestCase):
         valid = json.loads(audit()["content"])
         self.assertEqual(parse_audit(json.dumps(valid), {"A", "B"}), valid)
         invalid = [None, "plain prose", '{"support_status":"supported","support_status":"insufficient"}']
-        for key, value in [("support_status", "maybe"), ("unsupported_assumptions", "none"),
-                           ("contradictory_evidence", [3]), ("best_supported_option", {"answer": "A"}),
+        for key, value in [("support_status", "maybe"), ("option_checks", "none"),
+                           ("best_supported_option", {"answer": "A"}),
                            ("best_supported_option", "Z"), ("diagnosis", "")]:
             invalid.append(json.dumps({**valid, key: value}))
+        invalid.extend([
+            json.dumps({**valid, "option_checks": valid["option_checks"][:1]}),
+            json.dumps({**valid, "option_checks": [valid["option_checks"][0], valid["option_checks"][0]]}),
+            json.dumps({**valid, "option_checks": [{**valid["option_checks"][0], "label": "Z"},
+                                                     valid["option_checks"][1]]}),
+            json.dumps({**valid, "option_checks": [{**valid["option_checks"][0], "status": "maybe"},
+                                                     valid["option_checks"][1]]}),
+            json.dumps({**valid, "option_checks": [{**valid["option_checks"][0], "evidence_ids": [3]},
+                                                     valid["option_checks"][1]]}),
+            json.dumps({**valid, "option_checks": [{**valid["option_checks"][0], "reason": ""},
+                                                     valid["option_checks"][1]]}),
+            json.dumps({**valid, "best_supported_option": "A",
+                        "option_checks": [{**valid["option_checks"][0], "status": "contradicted"},
+                                          valid["option_checks"][1]]}),
+        ])
         for content in invalid:
             with self.subTest(content=content), self.assertRaises((ValueError, TypeError)):
                 parse_audit(content, {"A", "B"})
+
+    def test_audit_rejects_unknown_or_duplicate_evidence_ids(self):
+        valid = json.loads(audit(label="A")["content"])
+        valid["option_checks"][0]["evidence_ids"] = ["obs1"]
+        self.assertEqual(parse_audit(json.dumps(valid), {"A", "B"}, {"obs1"}), valid)
+        for evidence_ids in (["missing"], ["obs1", "obs1"]):
+            changed = copy.deepcopy(valid)
+            changed["option_checks"][0]["evidence_ids"] = evidence_ids
+            with self.subTest(evidence_ids=evidence_ids), self.assertRaises(ValueError):
+                parse_audit(json.dumps(changed), {"A", "B"}, {"obs1"})
 
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Video OS")
