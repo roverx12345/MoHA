@@ -34,6 +34,29 @@ $PY -m moha run --config /path/outside/repo/config.json --output /path/outside/r
 $PY -m moha resume --config /path/outside/repo/config.json --output /path/outside/repo/run
 ```
 
+主实验表的 shared calibration 用一个协调器为多个 Planner 栈选择同一套 Harness：
+
+```bash
+$PY -m moha shared-doctor \
+  --stack gpt55=/path/gpt55.json \
+  --stack qwen27b=/path/qwen27b.json \
+  --stack qwen9b=/path/qwen9b.json
+$PY -m moha shared-run \
+  --stack gpt55=/path/gpt55.json \
+  --stack qwen27b=/path/qwen27b.json \
+  --stack qwen9b=/path/qwen9b.json \
+  --output /path/outside/repo/shared-run
+```
+
+各栈必须使用完全相同的 H0、calibration/validation 划分、预算、搜索策略、
+validation 策略和候选目录。每条失败的“模型 × calibration 样本”轨迹各投一票；
+同一候选随后在全部模型和同一 validation 上成对评估，每个“模型 × 样本 × repeat”
+episode 等权，视频 bootstrap 同时保留该视频在所有模型上的结果。结构阶段始终只维护并
+晋升一个共享 Harness。结构冻结后，九组 perception policy 也在全部模型上完整运行，
+按联合准确率／效用选择唯一共享策略，同时在 `by_stack` 中保存各模型明细。
+输出的 `moha_shared_frozen_v1` 只表示这组模型的联合校准结果，不能冒充任一模型的独立校准。
+中断后把 `shared-run` 换成 `shared-resume`，保持相同且有序的 `--stack` 参数。
+
 Flat 的工具、媒体处理和模型适配器由 `config.runtime.root` 指定；`config.runtime.commit` 必须与该目录的提交完全一致。启动时检查模块实际导入路径，不扫描父目录中的历史版本。模板绑定了已修复视频结尾取整问题的干净运行时。要切换依赖，显式修改配置并创建新实验。
 
 MoHA 与 Flat 分别记录 Git 提交、源码哈希和干净状态。`doctor` 检查输入、视频哈希与配置，不调用模型；真实推理要求两份代码均已提交。配置只保存凭据文件或环境变量引用，不保存密钥。

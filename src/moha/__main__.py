@@ -2,12 +2,29 @@
 from __future__ import annotations
 import argparse
 import json
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from .models import Harness, check_splits, digest
 from .store import RunStore
+
+
+def parse_stacks(values):
+    stacks = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError("--stack must use ID=/absolute/path/to/config.json")
+        stack_id, path = value.split("=", 1)
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", stack_id) or not path:
+            raise ValueError("invalid --stack ID or configuration path")
+        if stack_id in stacks:
+            raise ValueError(f"duplicate shared stack ID: {stack_id}")
+        stacks[stack_id] = Path(path)
+    if len(stacks) < 2:
+        raise ValueError("shared calibration requires at least two --stack arguments")
+    return stacks
 
 
 def main(argv=None):
@@ -22,6 +39,12 @@ def main(argv=None):
             sub.add_argument("--frozen", required=True, type=Path)
             sub.add_argument("--manifest", required=True, type=Path)
             sub.add_argument("--resume", action="store_true")
+    for name in ("shared-doctor", "shared-run", "shared-resume"):
+        sub = commands.add_parser(name)
+        sub.add_argument("--stack", action="append", required=True,
+                         help="ordered model stack as ID=/absolute/path/to/config.json")
+        if name != "shared-doctor":
+            sub.add_argument("--output", required=True, type=Path)
     demo = commands.add_parser("demo")
     demo.add_argument("--output", required=True, type=Path)
     demo.add_argument("--resume", action="store_true")
@@ -35,6 +58,53 @@ def main(argv=None):
     elif args.command == "demo":
         from .demo import run_demo
         result = run_demo(args.output, args.resume)
+    elif args.command.startswith("shared-"):
+        from .bridge import build, prepare
+        from .perception import policy_grid
+        from .shared import NamespacedStore, SharedCalibrator, shared_identity
+        repo = Path(__file__).resolve().parents[2]
+        paths = parse_stacks(args.stack)
+        prepared = {stack_id: prepare(path, repo) for stack_id, path in paths.items()}
+        identity = shared_identity(prepared)
+        if args.command == "shared-doctor":
+            first = next(iter(prepared.values()))
+            result = {
+                "inputs_valid": True,
+                "stack_order": list(prepared),
+                "stacks": {stack_id: {
+                    "planner_model": item["config"]["models"]["planner"]["spec"]["model"],
+                    "planner_endpoints": list(item["planner_endpoints"]),
+                    "observer_endpoints": list(item["observer_endpoints"]),
+                    "diagnosis_workers": len(item["clients"]["judges"]),
+                    "clean_worktree": not item["identity"]["source"]["dirty"],
+                    "clean_runtime": not item["identity"]["runtime"]["dirty"],
+                } for stack_id, item in prepared.items()},
+                "calibration_samples_per_stack": len(first["calibration"]),
+                "validation_samples_per_stack": len(first["validation"]),
+                "validation_repeats": first["policy"].repeats,
+                "shared_perception_grid": policy_grid(first["initial"]),
+                "shared_perception_episodes": (len(prepared) * 9 * len(first["validation"])
+                                               * first["policy"].repeats),
+                "available_catalog": first["allowed_ids"],
+                "model_calls": 0,
+                "note": "Configuration and provenance checked; endpoint health is not measured.",
+            }
+        else:
+            if any(item["identity"][key]["dirty"] for item in prepared.values()
+                   for key in ("source", "runtime")):
+                raise ValueError("AGENTS.md requires clean committed source and runtime worktrees before inference")
+            roots = {repo, *(Path(item["config"]["runtime"]["root"]).resolve()
+                             for item in prepared.values())}
+            if any(args.output.resolve().is_relative_to(root) for root in roots):
+                raise ValueError("run output must be outside source worktrees")
+            with RunStore(args.output, identity, resume=args.command == "shared-resume") as store:
+                store.write(f"invocations/{uuid.uuid4().hex}.json", {
+                    "command": sys.argv if argv is None else argv, "cwd": str(Path.cwd()),
+                    "started_at": datetime.now(timezone.utc).isoformat(), "output": str(store.root),
+                }, immutable=True)
+                calibrators = {stack_id: build(item, NamespacedStore(store, f"models/{stack_id}"))
+                               for stack_id, item in prepared.items()}
+                result = SharedCalibrator(calibrators=calibrators, store=store).run()
     else:
         from .bridge import build, load_split, prepare, read_object
         repo = Path(__file__).resolve().parents[2]
