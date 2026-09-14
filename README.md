@@ -48,6 +48,10 @@ $PY -m moha shared-run \
   --output /path/outside/repo/shared-run
 ```
 
+需要交给自动恢复 supervisor 时，先用相同参数执行 `shared-init`；它只冻结 manifest、
+各模型命名空间和联合实验计划，`model_calls=0`，随后让 `python -m moha.supervise`
+接收同一组有序 `--stack` 参数。普通前台运行不需要这一步，直接使用 `shared-run`。
+
 各栈必须使用完全相同的 H0、calibration/validation 划分、预算、搜索策略、
 validation 策略和候选目录。每条失败的“模型 × calibration 样本”轨迹各投一票；
 同一候选随后在全部模型和同一 validation 上成对评估，每个“模型 × 样本 × repeat”

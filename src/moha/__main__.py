@@ -39,7 +39,7 @@ def main(argv=None):
             sub.add_argument("--frozen", required=True, type=Path)
             sub.add_argument("--manifest", required=True, type=Path)
             sub.add_argument("--resume", action="store_true")
-    for name in ("shared-doctor", "shared-run", "shared-resume"):
+    for name in ("shared-doctor", "shared-init", "shared-run", "shared-resume"):
         sub = commands.add_parser(name)
         sub.add_argument("--stack", action="append", required=True,
                          help="ordered model stack as ID=/absolute/path/to/config.json")
@@ -104,7 +104,13 @@ def main(argv=None):
                 }, immutable=True)
                 calibrators = {stack_id: build(item, NamespacedStore(store, f"models/{stack_id}"))
                                for stack_id, item in prepared.items()}
-                result = SharedCalibrator(calibrators=calibrators, store=store).run()
+                calibrator = SharedCalibrator(calibrators=calibrators, store=store)
+                if args.command == "shared-init":
+                    result = {"status": "initialized", "stack_order": list(prepared),
+                              "run_identity": store.identity_hash, "model_calls": 0}
+                    store.write("initialization.json", result, immutable=True)
+                else:
+                    result = calibrator.run()
     else:
         from .bridge import build, load_split, prepare, read_object
         repo = Path(__file__).resolve().parents[2]
