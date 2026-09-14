@@ -54,7 +54,8 @@ def retry_decision(checkpoint, *, exit_code, checkpoint_fresh, attempts, max_res
 
 
 def supervise(config, output, state_dir, *, max_restarts=3, backoff_seconds=30,
-              popen=subprocess.Popen, sleeper=time.sleep):
+              popen=subprocess.Popen, sleeper=time.sleep,
+              resume_command=None, input_hashes=None):
     if isinstance(max_restarts, bool) or not isinstance(max_restarts, int) or not 0 <= max_restarts <= 10:
         raise ValueError("max_restarts must be an integer from 0 through 10")
     if isinstance(backoff_seconds, bool) or not math.isfinite(backoff_seconds) or not 0 <= backoff_seconds <= 3600:
@@ -65,9 +66,11 @@ def supervise(config, output, state_dir, *, max_restarts=3, backoff_seconds=30,
     manifest = _read(output / "manifest.json")
     if not manifest:
         raise ValueError("supervisor requires an initialized run with a manifest")
-    command = [sys.executable, "-m", "moha", "resume", "--config", str(config), "--output", str(output)]
-    identity = {"config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
-                "run_identity": manifest["identity_hash"], "command": command,
+    command = (list(resume_command) if resume_command is not None else
+               [sys.executable, "-m", "moha", "resume", "--config", str(config), "--output", str(output)])
+    inputs = ({"config_sha256": hashlib.sha256(config.read_bytes()).hexdigest()}
+              if input_hashes is None else {"input_sha256s": input_hashes})
+    identity = {**inputs, "run_identity": manifest["identity_hash"], "command": command,
                 "supervisor_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 "max_restarts": max_restarts, "backoff_seconds": backoff_seconds}
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -139,9 +142,36 @@ def supervise(config, output, state_dir, *, max_restarts=3, backoff_seconds=30,
         raise RuntimeError("supervisor restart accounting is inconsistent")
 
 
+def supervise_shared(stacks, output, state_dir, **kwargs):
+    """Supervise a shared-resume command without collapsing its ordered configs."""
+    if len(stacks) < 2:
+        raise ValueError("shared supervision requires at least two --stack arguments")
+    normalized, hashes = [], {}
+    for value in stacks:
+        if "=" not in value:
+            raise ValueError("--stack must use ID=/absolute/path/to/config.json")
+        stack_id, raw_path = value.split("=", 1)
+        if (not stack_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+                                for c in stack_id) or stack_id in hashes):
+            raise ValueError("invalid or duplicate shared stack ID")
+        path = Path(raw_path).resolve()
+        hashes[stack_id] = hashlib.sha256(path.read_bytes()).hexdigest()
+        normalized.append(f"{stack_id}={path}")
+    output = Path(output).resolve()
+    command = [sys.executable, "-m", "moha", "shared-resume"]
+    for value in normalized:
+        command.extend(("--stack", value))
+    command.extend(("--output", str(output)))
+    first_config = Path(normalized[0].split("=", 1)[1])
+    return supervise(first_config, output, state_dir, resume_command=command,
+                     input_hashes=hashes, **kwargs)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, type=Path)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--config", type=Path)
+    inputs.add_argument("--stack", action="append")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--max-restarts", type=int, default=3)
@@ -151,8 +181,10 @@ def main(argv=None):
         raise KeyboardInterrupt()
     previous = signal.signal(signal.SIGTERM, interrupt)
     try:
-        return supervise(args.config, args.output, args.state_dir,
-                         max_restarts=args.max_restarts, backoff_seconds=args.backoff_seconds)
+        target = supervise_shared if args.stack else supervise
+        source = args.stack if args.stack else args.config
+        return target(source, args.output, args.state_dir,
+                      max_restarts=args.max_restarts, backoff_seconds=args.backoff_seconds)
     finally:
         signal.signal(signal.SIGTERM, previous)
 

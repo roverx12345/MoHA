@@ -8,6 +8,7 @@ from moha.models import Episode, Harness, ValidationPolicy
 from moha.shared import (AGGREGATION_RULE, NamespacedStore, SharedCalibrator,
                          compare_shared)
 from moha.store import RunStore
+from moha.supervise import supervise_shared
 
 
 def runs(samples, harness, answers, repeat=0, cost=100):
@@ -83,6 +84,30 @@ class SharedLoopTests(unittest.TestCase):
         with RunStore(self.root, {}) as store:
             with self.assertRaises(ValueError):
                 NamespacedStore(store, "../outside")
+
+    def test_shared_supervisor_preserves_ordered_stack_arguments(self):
+        output, state = self.root, Path(self.tmp.name) / "supervisor"
+        output.mkdir()
+        (output / "manifest.json").write_text('{"identity_hash":"shared-unit"}')
+        first, second = Path(self.tmp.name) / "a.json", Path(self.tmp.name) / "b.json"
+        first.write_text("{}")
+        second.write_text("{}")
+        calls = []
+
+        def popen(command, **_):
+            calls.append(command)
+            class Process:
+                pid = 123
+                def wait(self):
+                    (output / "checkpoint.json").write_text('{"status":"completed"}')
+                    return 0
+            return Process()
+
+        code = supervise_shared([f"a={first}", f"b={second}"], output, state,
+                                popen=popen, sleeper=lambda _: None)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0][3], "shared-resume")
+        self.assertEqual(calls[0][4:8], ["--stack", f"a={first}", "--stack", f"b={second}"])
 
 
 if __name__ == "__main__":
