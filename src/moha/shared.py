@@ -75,9 +75,9 @@ def validate_shared_prepared(stacks: dict[str, dict]) -> None:
             raise ValueError(f"shared stack {stack_id} differs from {reference_id}: {', '.join(failed)}")
 
 
-def shared_identity(stacks: dict[str, dict]) -> dict:
+def shared_identity(stacks: dict[str, dict], *, lineage: dict | None = None) -> dict:
     validate_shared_prepared(stacks)
-    return {
+    identity = {
         "implementation": "moha_shared_calibration_v1",
         "aggregation": AGGREGATION_RULE,
         "validation_schedule": VALIDATION_SCHEDULE,
@@ -85,6 +85,11 @@ def shared_identity(stacks: dict[str, dict]) -> dict:
         "stacks": [{"stack_id": stack_id, "identity": prepared["identity"]}
                    for stack_id, prepared in stacks.items()],
     }
+    if lineage is not None:
+        if lineage.get("schema") != "moha_shared_lineage_v1":
+            raise ValueError("unknown shared calibration lineage schema")
+        identity["lineage"] = copy.deepcopy(lineage)
+    return identity
 
 
 def compare_shared(old_by_stack: dict[str, list[list[Episode]]],

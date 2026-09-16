@@ -39,12 +39,14 @@ def main(argv=None):
             sub.add_argument("--frozen", required=True, type=Path)
             sub.add_argument("--manifest", required=True, type=Path)
             sub.add_argument("--resume", action="store_true")
-    for name in ("shared-doctor", "shared-init", "shared-run", "shared-resume"):
+    for name in ("shared-doctor", "shared-init", "shared-run", "shared-resume", "shared-fork"):
         sub = commands.add_parser(name)
         sub.add_argument("--stack", action="append", required=True,
                          help="ordered model stack as ID=/absolute/path/to/config.json")
         if name != "shared-doctor":
             sub.add_argument("--output", required=True, type=Path)
+        if name == "shared-fork":
+            sub.add_argument("--parent", required=True, type=Path)
     demo = commands.add_parser("demo")
     demo.add_argument("--output", required=True, type=Path)
     demo.add_argument("--resume", action="store_true")
@@ -59,13 +61,13 @@ def main(argv=None):
         from .demo import run_demo
         result = run_demo(args.output, args.resume)
     elif args.command.startswith("shared-"):
-        from .bridge import build, prepare
+        from .bridge import build, prepare, read_object
         from .perception import policy_grid
         from .shared import NamespacedStore, SharedCalibrator, shared_identity
         repo = Path(__file__).resolve().parents[2]
         paths = parse_stacks(args.stack)
         prepared = {stack_id: prepare(path, repo) for stack_id, path in paths.items()}
-        identity = shared_identity(prepared)
+        base_identity = shared_identity(prepared)
         if args.command == "shared-doctor":
             first = next(iter(prepared.values()))
             result = {
@@ -75,6 +77,7 @@ def main(argv=None):
                     "planner_model": item["config"]["models"]["planner"]["spec"]["model"],
                     "planner_endpoints": list(item["planner_endpoints"]),
                     "observer_endpoints": list(item["observer_endpoints"]),
+                    "planner_max_inflight_per_endpoint": item["planner_max_inflight_per_endpoint"],
                     "diagnosis_workers": len(item["clients"]["judges"]),
                     "clean_worktree": not item["identity"]["source"]["dirty"],
                     "clean_runtime": not item["identity"]["runtime"]["dirty"],
@@ -97,6 +100,30 @@ def main(argv=None):
                              for item in prepared.values())}
             if any(args.output.resolve().is_relative_to(root) for root in roots):
                 raise ValueError("run output must be outside source worktrees")
+            if args.command == "shared-fork":
+                from .lineage import import_shared_fork, plan_shared_fork
+                parent_manifest = read_object(args.parent / "manifest.json")
+                if not isinstance(parent_manifest.get("identity"), dict):
+                    raise ValueError("parent run manifest lacks an identity")
+                with RunStore(args.parent, parent_manifest["identity"], resume=True) as parent_store:
+                    plan = plan_shared_fork(parent_store, base_identity)
+                    identity = shared_identity(prepared, lineage=plan["descriptor"])
+                    with RunStore(args.output, identity) as store:
+                        store.write(f"invocations/{uuid.uuid4().hex}.json", {
+                            "command": sys.argv if argv is None else argv, "cwd": str(Path.cwd()),
+                            "started_at": datetime.now(timezone.utc).isoformat(), "output": str(store.root),
+                        }, immutable=True)
+                        calibrators = {stack_id: build(item, NamespacedStore(store, f"models/{stack_id}"))
+                                       for stack_id, item in prepared.items()}
+                        SharedCalibrator(calibrators=calibrators, store=store)
+                        result = import_shared_fork(parent_store, store, plan)
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 0
+            lineage = None
+            if args.command == "shared-resume":
+                existing = read_object(args.output / "manifest.json")
+                lineage = existing.get("identity", {}).get("lineage")
+            identity = shared_identity(prepared, lineage=lineage)
             with RunStore(args.output, identity, resume=args.command == "shared-resume") as store:
                 store.write(f"invocations/{uuid.uuid4().hex}.json", {
                     "command": sys.argv if argv is None else argv, "cwd": str(Path.cwd()),

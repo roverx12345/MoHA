@@ -1,9 +1,12 @@
+import copy
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from moha.demo import DemoJudge, DemoRunner, sample
 from moha.loop import Calibrator, SearchPolicy
+from moha.lineage import import_shared_fork, plan_shared_fork
 from moha.models import Episode, Harness, ValidationPolicy
 from moha.shared import (AGGREGATION_RULE, NamespacedStore, SharedCalibrator,
                          compare_shared)
@@ -108,6 +111,73 @@ class SharedLoopTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(calls[0][3], "shared-resume")
         self.assertEqual(calls[0][4:8], ["--stack", f"a={first}", "--stack", f"b={second}"])
+
+
+class SharedForkTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def identity(self, commit, source_files, endpoint, *, concurrency=None):
+        stacks = []
+        for stack_id in ("a", "b"):
+            config = {
+                "observer": {"model": "omni", "base_url": endpoint},
+                "models": {"planner": {"spec": {"model": stack_id,
+                                                    "base_url": endpoint}}},
+                "constant": "same",
+            }
+            if concurrency is not None:
+                config["planner_max_inflight_per_endpoint"] = concurrency
+            stacks.append({"stack_id": stack_id, "identity": {
+                "config": config,
+                "source": {"commit": commit, "dirty": False,
+                           "source_hash": commit, "files": source_files,
+                           "environment": {"python": "unit"}},
+                "runtime": {"commit": "flat", "dirty": False,
+                            "source_hash": "flat", "files": {}},
+                "input_hashes": {"calibration": "c", "validation": "v"},
+            }})
+        return {"implementation": "moha_shared_calibration_v1",
+                "aggregation": "unit", "validation_schedule": "unit",
+                "stack_order": ["a", "b"], "stacks": stacks}
+
+    def test_fork_binds_and_hardlinks_completed_artifacts(self):
+        old_files = {"src/moha/bridge.py": "old", "src/moha/shared.py": "same"}
+        new_files = {"src/moha/bridge.py": "new", "src/moha/shared.py": "same",
+                     "src/moha/lineage.py": "new"}
+        parent_identity = self.identity("old", old_files, "http://old/v1")
+        child_base = self.identity("new", new_files,
+                                   "http://local/v1,http://remote/v1", concurrency=1)
+        parent_root, child_root = self.root / "parent", self.root / "child"
+        checkpoint = {"round": 0, "attempt": 0, "harness": Harness().to_dict(),
+                      "history": [], "status": "running", "phase": None}
+        with RunStore(parent_root, parent_identity) as parent:
+            parent.write("checkpoint.json", checkpoint)
+            parent.write("models/a/episodes/unit.json", {"status": "completed"}, immutable=True)
+            plan = plan_shared_fork(parent, child_base)
+            child_identity = copy.deepcopy(child_base)
+            child_identity["lineage"] = plan["descriptor"]
+            with RunStore(child_root, child_identity) as child:
+                result = import_shared_fork(parent, child, plan)
+                self.assertEqual(result["status"], "forked")
+                self.assertEqual(child.read("checkpoint.json"), checkpoint)
+                self.assertEqual(child.read("lineage.json")["artifact_count"], 1)
+        parent_file = parent_root / "models/a/episodes/unit.json"
+        child_file = child_root / "models/a/episodes/unit.json"
+        self.assertEqual(os.stat(parent_file).st_ino, os.stat(child_file).st_ino)
+
+    def test_fork_rejects_source_changes_outside_lineage_boundary(self):
+        parent_identity = self.identity("old", {"src/moha/runtime.py": "old"},
+                                        "http://old/v1")
+        child_identity = self.identity("new", {"src/moha/runtime.py": "new"},
+                                       "http://new/v1", concurrency=1)
+        with RunStore(self.root / "parent", parent_identity) as parent:
+            parent.write("checkpoint.json", {"round": 0, "attempt": 0,
+                "harness": Harness().to_dict(), "history": [], "status": "running", "phase": None})
+            with self.assertRaisesRegex(ValueError, "outside the approved lineage boundary"):
+                plan_shared_fork(parent, child_identity)
 
 
 if __name__ == "__main__":

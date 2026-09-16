@@ -43,6 +43,19 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(observers, ("http://o0/v1", "http://o1/v1"))
         self.assertIsNot(lanes[0]["planner"], lanes[1]["planner"])
 
+    def test_shared_planner_endpoint_uses_one_cross_lane_call_gate(self):
+        _, _, lanes = lane_clients(self.models("http://planner/v1"),
+            "http://o0/v1,http://o1/v1", self.budget(), 1)
+        self.assertIs(lanes[0]["planner"]._moha_call_gate,
+                      lanes[1]["planner"]._moha_call_gate)
+        self.assertEqual([lane["planner"].max_inflight for lane in lanes], [1, 1])
+
+    def test_distinct_planner_endpoints_use_distinct_call_gates(self):
+        _, _, lanes = lane_clients(self.models("http://p0/v1,http://p1/v1"),
+            "http://o0/v1,http://o1/v1", self.budget(), 1)
+        self.assertIsNot(lanes[0]["planner"]._moha_call_gate,
+                         lanes[1]["planner"]._moha_call_gate)
+
     def test_matching_pools_pair_in_order_and_singletons_stay_single(self):
         for count in (1, 2):
             planners = tuple(f"http://p{i}/v1" for i in range(count))
@@ -64,6 +77,7 @@ class EndpointTests(unittest.TestCase):
         judge["key"] = {"local": True}
         cfg["models"] = self.models("http://p0/v1,http://p1/v1")
         cfg["models"]["planner"]["spec"]["retries"] = 2
+        cfg["planner_max_inflight_per_endpoint"] = 1
         cfg["models"]["judge"] = judge
         cfg["specialists"] = []
         cfg.pop("image")
@@ -97,6 +111,8 @@ class EndpointTests(unittest.TestCase):
                 for runner in cal.runners:
                     self.assertEqual(runner.planner.spec.base_url, runner.audit_planner.spec.base_url)
                     self.assertIsNot(runner.planner, runner.audit_planner)
+                    self.assertIs(runner.planner._moha_call_gate,
+                                  runner.audit_planner._moha_call_gate)
 
 
 class DiagnosisConfigTests(unittest.TestCase):
@@ -124,5 +140,17 @@ class DiagnosisConfigTests(unittest.TestCase):
                 cfg["diagnosis_workers"] = value
                 path.write_text(json.dumps(cfg))
                 with patch("moha.bridge.activate_runtime") as activate, self.assertRaisesRegex(ValueError, "positive integer"):
+                    prepare(path, Path(tmp))
+                activate.assert_not_called()
+
+    def test_invalid_planner_concurrency_fails_before_runtime_or_client_setup(self):
+        cfg = json.loads((Path(__file__).parents[1] / "config.example.json").read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            for value in (0, -1, True, 1.5, "1"):
+                cfg["planner_max_inflight_per_endpoint"] = value
+                path.write_text(json.dumps(cfg))
+                with patch("moha.bridge.activate_runtime") as activate, \
+                     self.assertRaisesRegex(ValueError, "positive integer"):
                     prepare(path, Path(tmp))
                 activate.assert_not_called()

@@ -8,6 +8,7 @@ import os
 import platform
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 from .catalog import catalog
@@ -183,9 +184,28 @@ def activate_runtime(reference):
     return root
 
 
-def lane_clients(models, observer_url, budget):
+class EndpointCallLimiter:
+    """Share one concurrency gate across clients targeting the same endpoint."""
+
+    def __init__(self, client, gate, max_inflight):
+        self.client = client
+        self._moha_call_gate = gate
+        self.max_inflight = max_inflight
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+    def call(self, *args, **kwargs):
+        with self._moha_call_gate:
+            return self.client.call(*args, **kwargs)
+
+
+def lane_clients(models, observer_url, budget, planner_max_inflight_per_endpoint=None):
     """Pair ordered endpoint pools, broadcasting a shared provider to each lane."""
     from flat.providers.scheduler import normalize_endpoint_urls
+    if planner_max_inflight_per_endpoint is not None:
+        positive_int(planner_max_inflight_per_endpoint,
+                     "planner_max_inflight_per_endpoint")
     planners = normalize_endpoint_urls(models["planner"]["spec"]["base_url"])
     observers = normalize_endpoint_urls(observer_url)
     count = max(len(planners), len(observers))
@@ -193,18 +213,26 @@ def lane_clients(models, observer_url, budget):
         raise ValueError("planner/observer endpoint counts must match or one must be a singleton")
     planners = planners * count if len(planners) == 1 else planners
     observers = observers * count if len(observers) == 1 else observers
+    gates = ({endpoint: threading.BoundedSemaphore(planner_max_inflight_per_endpoint)
+              for endpoint in set(planners)}
+             if planner_max_inflight_per_endpoint is not None else {})
     lanes = []
     for endpoint in planners:
         planner = models["planner"]
         lane_models = {**models, "planner": {**planner, "spec": {**planner["spec"], "base_url": endpoint}}}
-        lanes.append({name: text_client(value, budget) for name, value in lane_models.items() if name != "judge"})
+        clients = {name: text_client(value, budget)
+                   for name, value in lane_models.items() if name != "judge"}
+        if gates:
+            clients["planner"] = EndpointCallLimiter(
+                clients["planner"], gates[endpoint], planner_max_inflight_per_endpoint)
+        lanes.append(clients)
     return planners, observers, lanes
 
 
 def prepare(config_path, repo):
     config = read_object(config_path)
     required = {"schema", "runtime", "media_root", "calibration_manifest", "validation_manifest", "budget", "models", "observer"}
-    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers", "perception_calibration"}
+    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers", "perception_calibration", "planner_max_inflight_per_endpoint"}
     if required - set(config) or set(config) - allowed or config["schema"] != "moha_config_v1":
         raise ValueError("unknown or missing MOHA configuration fields/schema")
     judge_spec = config["models"].get("judge", {}).get("spec", {})
@@ -217,6 +245,9 @@ def prepare(config_path, repo):
                          "must resume with their original frozen source/configuration.")
     diagnosis_workers = config.get("diagnosis_workers", 8)
     positive_int(diagnosis_workers, "diagnosis_workers")
+    planner_max_inflight = config.get("planner_max_inflight_per_endpoint")
+    if planner_max_inflight is not None:
+        positive_int(planner_max_inflight, "planner_max_inflight_per_endpoint")
     runtime_root = activate_runtime(config["runtime"])
     from flat.core.budget import BudgetContract
     initial = Harness.from_dict(config.get("initial", {}))
@@ -248,7 +279,8 @@ def prepare(config_path, repo):
     models = config["models"]
     if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "extractor"}:
         raise ValueError("models require planner/judge and optionally extractor; selection is deterministic")
-    planner_endpoints, endpoints, lanes = lane_clients(models, config["observer"]["base_url"], budget)
+    planner_endpoints, endpoints, lanes = lane_clients(
+        models, config["observer"]["base_url"], budget, planner_max_inflight)
     clients = {"judges": [text_client(models["judge"], budget, structured=True) for _ in range(diagnosis_workers)],
                "probe_judges": [text_client(models["judge"], budget, structured=True) for _ in lanes],
                "lanes": lanes}
@@ -277,6 +309,7 @@ def prepare(config_path, repo):
             "policy": validation, "budget": budget, "assets": {**assets, **right_assets},
             "calibration": calibration, "validation": validation_samples, "clients": clients,
             "planner_endpoints": planner_endpoints, "observer_endpoints": endpoints, "allowed_ids": ids,
+            "planner_max_inflight_per_endpoint": planner_max_inflight,
             "media_hashes": {s["media_sha256"] for s in left["samples"] + right["samples"]}}
 
 
@@ -313,8 +346,13 @@ def build(prepared, store):
         planner_config = config["models"]["planner"]
         audit_config = {**planner_config, "spec": {**planner_config["spec"],
                         "base_url": clients["planner"].spec.base_url, "retries": 0}}
+        audit_planner = text_client(audit_config, prepared["budget"])
+        gate = getattr(clients["planner"], "_moha_call_gate", None)
+        if gate is not None:
+            audit_planner = EndpointCallLimiter(audit_planner, gate,
+                prepared["planner_max_inflight_per_endpoint"])
         runners.append(EpisodeRunner(service, clients["planner"], extractor=clients.get("extractor"),
-            audit_planner=text_client(audit_config, prepared["budget"]),
+            audit_planner=audit_planner,
             asr_backend="whisper" if asr else observer["backend"], store=store, lane=lane))
     return Calibrator(runners=runners, judges=[Judge(TextRoleClient(c)) for c in prepared["clients"]["judges"]],
         store=store, calibration=prepared["calibration"], validation=prepared["validation"],
