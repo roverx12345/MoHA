@@ -10,6 +10,7 @@ from .records import observer_audit
 
 
 PLANNER_TOOL_POLICY = "moha_scoped_search_instructions_v4"
+MIN_OBSERVE_WINDOW_SECONDS = 0.5
 
 
 class WindowPlayerRegistry(VideoPlayerRegistry):
@@ -73,7 +74,10 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
                     "start_seconds": {"type": "number", "minimum": 0,
                                       "description": "Window start in seconds from the video start."},
                     "end_seconds": {"type": "number", "minimum": 0,
-                                    "description": "Window end in source seconds, at most the video duration."},
+                                    "description": (
+                                        "Window end in source seconds, at most the video duration. "
+                                        "The observation window must be at least 0.5 seconds long."
+                                    )},
                     "instruction": {**goal["properties"]["target"], "description":
                         "A direct instruction or question for the observer: specify what to inspect "
                         "and which visible or audible facts to report. Request timing or order when "
@@ -112,6 +116,11 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
             raise PlayerProtocolError("observe requires start_seconds, end_seconds, instruction and "
                                       "evidence_type; only reference is optional")
         start, end = self._window(arguments)
+        if end - start + 1e-9 < MIN_OBSERVE_WINDOW_SECONDS:
+            raise PlayerProtocolError(
+                "observe window must be at least "
+                f"{MIN_OBSERVE_WINDOW_SECONDS:g} seconds"
+            )
         # Validate the semantic request before changing state or consuming media.
         try:
             # Adapt the public instruction to Flat's internal routing type.
@@ -124,8 +133,9 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
             message = str(exc).replace("goal.target", "instruction").replace("goal.reference", "reference")
             message = message.replace("observer goal type", "evidence_type").replace("relation goals", "relation evidence")
             raise PlayerProtocolError(message) from exc
-        # Player's navigation setter recentres, rounds and imposes a 0.5 s floor.
-        # Direct observation preserves the exact valid support chosen by the planner.
+        # Preserve the exact valid support chosen by the planner. The explicit
+        # minimum above rejects too-short media requests instead of silently
+        # widening or shifting their evidentiary support.
         self.state.window_start_seconds, self.state.window_end_seconds = float(start), float(end)
         self.state.mode, self.state.active_candidate_id = "local", None
         window = [float(start), float(end)]

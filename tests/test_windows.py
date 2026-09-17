@@ -127,22 +127,22 @@ class WindowTests(unittest.TestCase):
         self.assertEqual([r["window"] for r in receipts(episode.events)], [[5, 25], [40, 55]])
         self.assertEqual(episode.raw["navigation"]["visited_windows"], [[5, 25], [40, 55]])
 
-    def test_fractional_end_and_subsecond_support_are_not_shifted_or_rounded(self):
+    def test_fractional_end_and_minimum_support_are_not_shifted_or_rounded(self):
         class Fractional(Service):
             def begin_episode(self, asset_id):
                 started = super().begin_episode(asset_id)
                 started["media"]["duration_seconds"] = 60.123457
                 return started
-        service, planner = Fractional(), Planner([observe(59.923456, 60.123457), ANSWER])
+        service, planner = Fractional(), Planner([observe(59.623456, 60.123457), ANSWER])
         episode = EpisodeRunner(service, planner).run(Harness(), sample("unit"), 0)
         self.assertEqual(episode.status, "completed", episode.raw)
-        self.assertEqual(receipts(episode.events)[0]["window"], [59.923456, 60.123457])
-        self.assertEqual(episode.raw["navigation"]["current_window"], [59.923456, 60.123457])
+        self.assertEqual(receipts(episode.events)[0]["window"], [59.623456, 60.123457])
+        self.assertEqual(episode.raw["navigation"]["current_window"], [59.623456, 60.123457])
 
     def test_invalid_windows_or_controls_leave_state_and_backend_unchanged(self):
         registry, service = self.registry()
         invalid = [{"start_seconds": a, "end_seconds": b, **instruction_args(GOAL)}
-                   for a, b in [(-1, 5), (5, 5), (6, 5), (0, 61), (True, 5),
+                    for a, b in [(-1, 5), (5, 5), (5, 5.49), (6, 5), (0, 61), (True, 5),
                                 (0, "5"), (float("nan"), 5), (0, float("inf"))]]
         valid = {"start_seconds": 5, "end_seconds": 35, **instruction_args(GOAL)}
         invalid += [{**valid, key: value} for key, value in
@@ -171,11 +171,13 @@ class WindowTests(unittest.TestCase):
         self.assertEqual([x[0] for x in service.calls], ["begin"])
 
     def test_bad_window_is_repairable_planner_feedback(self):
-        planner = Planner([observe(0, 61), observe(0, 30), ANSWER])
+        planner = Planner([observe(17.48, 17.5), observe(17.25, 17.75), ANSWER])
         service = Service()
         episode = EpisodeRunner(service, planner).run(Harness(), sample("unit"), 0)
         self.assertEqual(episode.status, "completed", episode.raw)
-        self.assertTrue(json.loads(planner.calls[1]["messages"][-2]["content"])["isError"])
+        error = json.loads(planner.calls[1]["messages"][-2]["content"])
+        self.assertTrue(error["isError"])
+        self.assertIn("at least 0.5 seconds", error["message"])
         self.assertEqual([c[0] for c in service.calls], ["begin", "observe"])
 
     def test_execution_adaptation_changes_sampling_while_preserving_window(self):
