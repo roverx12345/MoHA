@@ -133,7 +133,7 @@ class NativePersistentMemoryTests(unittest.TestCase):
     def test_verifier_uses_injected_records_without_refinement_advice(self):
         planner = Planner([observe(), call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}),
                            final()])
-        verifier = Planner([audit()])
+        verifier = Planner([audit("supported", "A")])
         result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
             Harness(memory=True, verification=True, max_steps=6, history_turns=1), sample("cal"), 0)
         self.assertEqual(result.status, "completed", result.raw)

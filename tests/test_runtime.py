@@ -96,7 +96,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_modules_and_execution_reach_existing_runtime(self):
         from test_verification_gate import audit, final
-        service, planner = Service(), Planner(script() + [audit(), final()])
+        service, planner = Service(), Planner(script() + [audit("supported", "A"), final()])
         harness = Harness.from_dict({"overview": True, "memory": True, "verification": True,
             "execution": {"default": {}, "general": {"frames": 64}}})
         result = EpisodeRunner(service, planner).run(harness, sample("cal"), 0)
@@ -330,7 +330,7 @@ class WireTests(unittest.TestCase):
                         verifier_transport = None
                         if verification:
                             verifier_transport = Transport(False)
-                            verifier_transport.responses = [audit()]
+                            verifier_transport.responses = [audit("supported", "A")]
                             verifier = OpenAICompatiblePlannerClient(
                                 spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model="unit"),
                                 api_key="unit-key", budget=budget, transport=verifier_transport)

@@ -35,6 +35,11 @@ def observe(index=0):
                 "instruction": 'person action', "evidence_type": 'general'}, str(index))
 
 
+def verification_observe(index=0):
+    return call("verification_observe", {"start_seconds": index, "end_seconds": index+2,
+                "instruction": 'inspect the unresolved person action', "evidence_type": 'general'}, "verify-observe")
+
+
 class AuditContractTests(unittest.TestCase):
     def test_one_pass_adjudication_repairs_only_unsupported_candidates(self):
         valid = json.loads(audit("supported", "B")["content"])
@@ -48,14 +53,15 @@ class AuditContractTests(unittest.TestCase):
         self.assertEqual(final, {"status": "answered", "answer": "A"})
         self.assertEqual(decision["mode"], "keep_candidate")
 
-    def test_invalid_or_ambiguous_audit_keeps_candidate(self):
+    def test_invalid_or_ambiguous_audit_keeps_or_abstains_candidate(self):
         candidate = {"status": "answered", "answer": "A"}
         final, decision = adjudicate_candidate(candidate, {"audit_status": "invalid"}, {"A", "B"})
         self.assertEqual(final, candidate)
         self.assertEqual(decision["mode"], "keep_candidate")
         ambiguous = json.loads(audit("supported", None)["content"])
-        final, _ = adjudicate_candidate(candidate, {"audit_status": "valid", "audit": ambiguous}, {"A", "B"})
-        self.assertEqual(final, candidate)
+        final, decision = adjudicate_candidate(candidate, {"audit_status": "valid", "audit": ambiguous}, {"A", "B"})
+        self.assertEqual(final, {"status": "abstained", "answer": None})
+        self.assertEqual(decision["mode"], "abstain")
 
     def test_verification_is_extra_and_is_one_catalog_coordinate(self):
         from moha.catalog import catalog
@@ -127,6 +133,31 @@ class AuditContractTests(unittest.TestCase):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Video OS")
 class VerificationGateTests(unittest.TestCase):
+    def test_verifier_uses_at_most_one_observation_then_one_final_audit(self):
+        planner = Planner([final("A")])
+        verifier = Planner([verification_observe(10), audit("supported", "B")])
+        service = Service()
+        result = EpisodeRunner(service, planner, audit_planner=verifier).run(
+            Harness(verification=True, max_steps=1), sample("cal"), 0)
+        self.assertEqual((result.status, result.answer), ("completed", "B"), result.raw)
+        self.assertEqual(result.usage["planner_calls"], 1)
+        self.assertEqual(result.usage["verification_calls"], 1)
+        self.assertEqual(result.usage["verification_observation_calls"], 1)
+        self.assertEqual(result.usage["verification_model_calls"], 2)
+        self.assertEqual(result.usage["model_calls"], 3)
+        self.assertEqual([c[0] for c in service.calls], ["begin", "observe"])
+        self.assertEqual(verifier.calls[0]["tools"][0]["function"]["name"], "verification_observe")
+        self.assertEqual(verifier.calls[1]["tools"], [])
+        self.assertEqual(result.raw["verification_gate"]["verification_observation_calls"], 1)
+
+    def test_insufficient_candidate_abstains_without_supported_replacement(self):
+        planner = Planner([final("A")])
+        verifier = Planner([audit("insufficient", None)])
+        result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
+            Harness(verification=True, max_steps=1), sample("cal"), 0)
+        self.assertEqual((result.status, result.answer), ("abstained", None), result.raw)
+        self.assertEqual(result.raw["verification_adjudication"]["mode"], "abstain")
+
     def test_candidate_at_seven_is_audited_extra_and_adjudicated(self):
         planner = Planner([observe(i*3) for i in range(6)] + [final("B"), final("A")])
         verifier = Planner([audit("contradicted", "A")])
@@ -154,7 +185,7 @@ class VerificationGateTests(unittest.TestCase):
         messages = [observe(0), observe(3)] + [call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}, str(i)) for i in range(13)]
         messages += [final()]
         planner = Planner(messages)
-        verifier = Planner([audit()])
+        verifier = Planner([audit("supported", "A")])
         result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
             Harness(memory=True, verification=True, max_steps=16), sample("cal"), 0)
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
@@ -201,7 +232,7 @@ class VerificationGateTests(unittest.TestCase):
 
     def test_two_call_budget_starts_with_audit_without_gifting_a_planning_call(self):
         planner = Planner([observe(), final()])
-        verifier = Planner([audit()])
+        verifier = Planner([audit("supported", "A")])
         result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
             Harness(verification=True, max_steps=2), sample("cal"), 0)
         self.assertEqual(result.usage["model_calls"], 3)
@@ -226,7 +257,7 @@ class VerificationGateTests(unittest.TestCase):
 
     def test_post_audit_keeps_tools_until_the_last_planner_call(self):
         service, planner = Service(), Planner([final(), observe(), final()])
-        verifier = Planner([audit()])
+        verifier = Planner([audit("supported", "A")])
         result = EpisodeRunner(service, planner, audit_planner=verifier).run(
             Harness(verification=True, max_steps=3), sample("cal"), 0)
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
@@ -242,7 +273,7 @@ class VerificationGateTests(unittest.TestCase):
                 raise AssertionError("no extra compute after verification")
         extractor = Extractor()
         planner = Planner([final(), {"role": "assistant", "content": "The evidence is unclear."}])
-        verifier = Planner([audit()])
+        verifier = Planner([audit("supported", "A")])
         result = EpisodeRunner(Service(), planner, extractor=extractor, audit_planner=verifier).run(
             Harness(verification=True, max_steps=2), sample("cal"), 0)
         self.assertEqual(extractor.calls, 0)

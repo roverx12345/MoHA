@@ -7,7 +7,8 @@ from .records import normalize, visible_observations, observer_audit
 from .context import PLANNER_CONTEXT_POLICY, bounded_history, tool_context, fields
 from .memory import MEMORY_POLICY, MEMORY_CAPABILITY, ObservationMemory, persistent_history
 from .verification import (VERIFICATION_POLICY, VERIFICATION_CAPABILITY, diagnosis_messages,
-                           verification_tool, visible_records, parse_audit, adjudicate_candidate)
+                           verification_tool, verification_observe_tool, visible_records,
+                           parse_audit, adjudicate_candidate)
 from .answers import (ANSWER_PARSING_POLICY, terminal_json_answer,
                       terminal_tool_call_answer)
 from .failures import ExecutionFailure, classify_failure
@@ -44,11 +45,13 @@ VERIFICATION_PROMPT = """Verification is a single-pass outcome audit.
 The harness makes one extra verifier call outside the planner step budget when you submit a
 candidate answer. The audit compares every option with the original observations and records
 support, contradiction, uncertainty and evidence IDs. It is diagnostic only: it does not revise
-request more perception or start a planning/refinement loop. If the audit identifies a supported
-alternative while the candidate is contradicted or insufficient, the harness may use that option
-as the final answer; otherwise it keeps the candidate. Calling verify_fresh uses the same one-call
-allowance early; a later candidate is then handled without a second audit. Candidate answers and
-your hypotheses are unverified, not evidence."""
+request more perception or start a planning/refinement loop. The verifier may make one targeted
+observation when the current evidence is insufficient, then it must emit one final audit. If the
+audit identifies a supported alternative while the candidate is contradicted or insufficient, the
+harness may use that option as the final answer. An insufficient candidate with no supported
+replacement is abstained. Calling verify_fresh uses the same one-call allowance early; a later
+candidate is then handled without a second audit. Candidate answers and your hypotheses are
+unverified, not evidence."""
 
 FINAL_ANSWER_PROMPT = """Resolve uncertainty using your judgment within the remaining budget."""
 
@@ -150,6 +153,8 @@ class EpisodeRunner:
         session_id = None
         planner_calls = 0
         verification_calls = 0
+        verification_observation_calls = 0
+        verification_model_calls = 0
         memory = ObservationMemory() if harness.memory or harness.verification else None
         verification_done = False
         memory_history_turns = max(harness.history_turns, harness.max_steps)
@@ -191,7 +196,7 @@ class EpisodeRunner:
             module_names = {t["function"]["name"] for t in tools} - {"search", "observe"}
 
             def run_verification(trigger, available_messages, *, candidate=None, arguments=None, call_id=None):
-                nonlocal verification_calls, verification_done
+                nonlocal verification_calls, verification_observation_calls, verification_model_calls, verification_done
                 if verification_done:
                     raise ValueError("the single verification has already been performed")
                 arguments = arguments or {}
@@ -201,26 +206,79 @@ class EpisodeRunner:
                 hypotheses = next((m["content"] for m in reversed(available_messages)
                                    if m.get("role") == "assistant" and isinstance(m.get("content"), str)
                                    and m["content"].strip()), None)
+                duration_seconds = started.get("media", {}).get("duration_seconds")
                 fresh = diagnosis_messages(sample.task, records, candidate_answer=candidate,
-                                           planner_hypotheses=hypotheses, **arguments)
+                                           planner_hypotheses=hypotheses,
+                                           media_duration_seconds=duration_seconds,
+                                           verification_observation_budget=1, **arguments)
                 verification_calls += 1
                 verification_done = True
                 audit_step = planner_calls
                 raw["verification_gate"] = {"trigger": trigger, "step": audit_step,
                                             "planner_step": planner_calls,
                                             "verification_call": verification_calls,
+                                            "verification_observation_calls": 0,
                                             "candidate_answer": copy.deepcopy(candidate), "performed": True,
                                             "post_verify_mode": VERIFICATION_CAPABILITY["post_verify_mode"]}
                 emit(kind="verification_request", step=audit_step, planner_step=planner_calls,
                      verification_call=verification_calls, messages=fresh, call_id=call_id, trigger=trigger)
-                diagnosis = self.audit_planner.call(messages=fresh, tools=[], tool_choice="none", parallel_tool_calls=False)
+                verification_model_calls += 1
+                diagnosis = self.audit_planner.call(
+                    messages=fresh, tools=[verification_observe_tool(duration_seconds)],
+                    tool_choice="auto", parallel_tool_calls=False)
+
+                def invalid_audit(error):
+                    message = diagnosis.message()
+                    emit(kind="verification", step=audit_step, planner_step=planner_calls,
+                         verification_call=verification_calls, message=message,
+                         metadata=dict(diagnosis.metadata), call_id=call_id, trigger=trigger)
+                    result = {"diagnosis": message.get("content"), "receipt": dict(diagnosis.metadata),
+                              "audit": None, "audit_status": "invalid", "isError": True,
+                              "error": str(error)}
+                    raw["verification_gate"]["audit_status"] = "invalid"
+                    return result
+
+                audit_messages = fresh
+                if diagnosis.tool_calls:
+                    if len(diagnosis.tool_calls) != 1 or diagnosis.tool_calls[0].name != "verification_observe":
+                        return invalid_audit("audit returned an unsupported tool call")
+                    observe_call = diagnosis.tool_calls[0]
+                    try:
+                        observe_arguments = observe_call.parse_arguments()
+                        required = {"start_seconds", "end_seconds", "instruction", "evidence_type"}
+                        if not isinstance(observe_arguments, dict) or not required <= set(observe_arguments) \
+                                or set(observe_arguments) - required - {"reference"}:
+                            raise ValueError("verification_observe requires start_seconds, end_seconds, instruction and evidence_type")
+                    except (ValueError, TypeError, KeyError) as exc:
+                        return invalid_audit(exc)
+                    registry.step, registry.call_id = audit_step, observe_call.id
+                    emit(kind="verification_observation_request", step=audit_step,
+                         planner_step=planner_calls, verification_call=verification_calls,
+                         observation_call=observe_call.id, arguments=observe_arguments)
+                    observation_result = dispatcher.invoke("observe", observe_arguments, session_id=session_id)
+                    if registry.fatal_error:
+                        raise ExecutionFailure(registry.fatal_failure)
+                    verification_observation_calls += 1
+                    raw["verification_gate"]["verification_observation_calls"] = verification_observation_calls
+                    audit_messages = fresh + [diagnosis.message(), _tool_message(observe_call.id, observation_result)]
+                    records = visible_records(audit_messages)
+                    fresh = diagnosis_messages(sample.task, records, candidate_answer=candidate,
+                                               planner_hypotheses=hypotheses,
+                                               media_duration_seconds=duration_seconds,
+                                               verification_observation_budget=0, **arguments)
+                    emit(kind="verification_observation", step=audit_step,
+                         planner_step=planner_calls, verification_call=verification_calls,
+                         observation_call=observe_call.id, result=observation_result)
+                    verification_model_calls += 1
+                    diagnosis = self.audit_planner.call(
+                        messages=fresh, tools=[], tool_choice="none", parallel_tool_calls=False)
                 emit(kind="verification", step=audit_step, planner_step=planner_calls,
                      verification_call=verification_calls, message=diagnosis.message(),
                      metadata=dict(diagnosis.metadata), call_id=call_id, trigger=trigger)
                 result = {"diagnosis": diagnosis.message().get("content"), "receipt": dict(diagnosis.metadata)}
                 try:
                     if diagnosis.tool_calls:
-                        raise ValueError("audit returned tool calls during the text-only stage")
+                        raise ValueError("audit returned tool calls during the final text-only stage")
                     source_ids = {r["observation"].get("observation_id") for r in records}
                     source_ids.discard(None)
                     result.update(audit=parse_audit(result["diagnosis"], sample.task["options"], source_ids),
@@ -398,7 +456,9 @@ class EpisodeRunner:
         finally:
             raw["planner_calls_used"] = planner_calls
             raw["verification_calls_used"] = verification_calls
-            raw["model_calls_used"] = planner_calls + verification_calls
+            raw["verification_observation_calls_used"] = verification_observation_calls
+            raw["verification_model_calls_used"] = verification_model_calls
+            raw["model_calls_used"] = planner_calls + verification_model_calls
             if harness.memory:
                 raw["memory"] = memory.read()
             if session_id is not None:

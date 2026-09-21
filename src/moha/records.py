@@ -66,6 +66,8 @@ def usage_from(events: list[dict], session: dict | None) -> dict:
     ledger = (session or {}).get("budget_ledger") or {}
     usage = {"observer_calls": len(items), "planner_calls": sum(e["kind"] == "planner" for e in events)}
     usage["verification_calls"] = sum(e["kind"] == "verification_request" for e in events)
+    usage["verification_observation_calls"] = sum(e["kind"] == "verification_observation" for e in events)
+    usage["verification_model_calls"] = usage["verification_calls"]
     usage["model_calls"] = usage["planner_calls"] + usage["verification_calls"]
     usage["sensory_looks"] = numeric(ledger.get("look_used"))
     fields = {"sampled_frames": ("frames_used", ("sampled_frames", "frame_count")),
@@ -107,6 +109,10 @@ def normalize(sample: Sample, harness: Harness, repeat: int, raw: dict) -> Episo
     usage = usage_from(events, raw.get("perception_receipt"))
     usage["planner_calls"] = raw.get("planner_calls_used", usage["planner_calls"])
     usage["verification_calls"] = raw.get("verification_calls_used", usage["verification_calls"])
+    usage["verification_observation_calls"] = raw.get(
+        "verification_observation_calls_used", usage["verification_observation_calls"])
+    usage["verification_model_calls"] = raw.get(
+        "verification_model_calls_used", usage["verification_model_calls"])
     usage["model_calls"] = raw.get("model_calls_used", usage["model_calls"])
     return Episode(sample.sample_id, sample.id, harness.id, repeat, list(sample.video_key),
                    sample.expected_answer, answer, status, events,

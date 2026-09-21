@@ -81,8 +81,8 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(result.usage["verification_calls"], 1)
         fresh = verifier.calls[0]
         self.assertEqual(len(fresh["messages"]), 2)
-        self.assertEqual(fresh["tools"], [])
-        self.assertEqual(fresh["tool_choice"], "none")
+        self.assertEqual(fresh["tools"][0]["function"]["name"], "verification_observe")
+        self.assertEqual(fresh["tool_choice"], "auto")
         self.assertNotIn("WORKING_SENTINEL", str(fresh))
         self.assertIn("GOAL_SENTINEL", str(fresh))
         event = next(e for e in result.events if e["kind"] == "tool_result" and e["tool"] == "verify_fresh")
@@ -209,8 +209,8 @@ class VerificationWireTests(unittest.TestCase):
         wire = verifier_transport.calls[0]
         self.assertEqual(len(wire["messages"]), 2)
         self.assertNotIn("response_format", wire)
-        self.assertFalse(wire.get("tools"))
-        self.assertEqual(wire["tool_choice"], "none")
+        self.assertTrue(wire.get("tools"))
+        self.assertEqual(wire["tool_choice"], "auto")
         self.assertTrue(all(isinstance(m["content"], str) for m in wire["messages"]))
         payload = json.loads(wire["messages"][1]["content"])
         self.assertEqual(payload["options"], sample("cal").task["options"])
