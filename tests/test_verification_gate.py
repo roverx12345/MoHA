@@ -150,6 +150,18 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(verifier.calls[1]["tools"], [])
         self.assertEqual(result.raw["verification_gate"]["verification_observation_calls"], 1)
 
+    def test_verifier_preserves_existing_evidence_for_final_audit_after_observation(self):
+        planner = Planner([observe(), call("verify_fresh", {"source_ids": ["obs1"]}, "verify"), final()])
+        verifier = Planner([verification_observe(10), audit("supported", "A")])
+        result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
+            Harness(verification=True, max_steps=3), sample("cal"), 0)
+        self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
+        self.assertEqual(result.usage["verification_model_calls"], 2)
+        self.assertEqual(result.usage["verification_observation_calls"], 1)
+        payload = json.loads(verifier.calls[1]["messages"][1]["content"])
+        self.assertEqual(len(payload["observations"]), 2)
+        self.assertIn("A person jumps.", str(payload["observations"]))
+
     def test_insufficient_candidate_abstains_without_supported_replacement(self):
         planner = Planner([final("A")])
         verifier = Planner([audit("insufficient", None)])

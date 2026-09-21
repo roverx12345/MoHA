@@ -260,8 +260,12 @@ class EpisodeRunner:
                         raise ExecutionFailure(registry.fatal_failure)
                     verification_observation_calls += 1
                     raw["verification_gate"]["verification_observation_calls"] = verification_observation_calls
-                    audit_messages = fresh + [diagnosis.message(), _tool_message(observe_call.id, observation_result)]
-                    records = visible_records(audit_messages)
+                    observation_message = _tool_message(observe_call.id, observation_result)
+                    audit_messages = fresh + [diagnosis.message(), observation_message]
+                    # The fresh audit payload is user data and is intentionally not
+                    # re-parsed as a tool trace. Preserve the original evidence and
+                    # append the one new observation for the final audit.
+                    records = records + visible_records([observation_message])
                     fresh = diagnosis_messages(sample.task, records, candidate_answer=candidate,
                                                planner_hypotheses=hypotheses,
                                                media_duration_seconds=duration_seconds,
