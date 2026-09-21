@@ -69,16 +69,17 @@ class NativeVerificationTests(unittest.TestCase):
             "instruction": 'GOAL_SENTINEL', "evidence_type": 'general'}),
             call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}),
             call("verify_fresh", {"diagnostic_question": "What remains uncertain?"}),
-            {"role": "assistant", "content": text},
             {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]
         planner = Planner(messages)
+        verifier = Planner([audit_response()])
         with patch('flat.agent.evidence.EvidenceLedger.from_task', side_effect=AssertionError("old rules must be unused")):
-            result = EpisodeRunner(Service(), planner).run(Harness(memory=True, verification=True, max_steps=5), sample("cal"), 0)
+            result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
+                Harness(memory=True, verification=True, max_steps=5), sample("cal"), 0)
         self.assertEqual(result.status, "completed", result.raw)
         self.assertEqual(result.usage["model_calls"], 5)
         self.assertEqual(result.usage["planner_calls"], 4)
         self.assertEqual(result.usage["verification_calls"], 1)
-        fresh = planner.calls[3]
+        fresh = verifier.calls[0]
         self.assertEqual(len(fresh["messages"]), 2)
         self.assertEqual(fresh["tools"], [])
         self.assertEqual(fresh["tool_choice"], "none")
@@ -88,7 +89,7 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(event["result"]["audit"], json.loads(text))
         audit_event = next(e for e in result.events if e["kind"] == "verification")
         self.assertEqual(audit_event["message"]["content"], text)
-        projected = json.loads(planner.calls[-1]["messages"][-2]["content"])
+        projected = json.loads(planner.calls[-1]["messages"][-1]["content"])
         self.assertEqual(projected["verification_advice"]["verification"]["audit"], json.loads(text))
         self.assertNotIn("diagnosis", projected)
         self.assertNotIn("receipt", projected)
@@ -99,9 +100,10 @@ class NativeVerificationTests(unittest.TestCase):
         planner = Planner([call("observe", {"start_seconds": 10, "end_seconds": 20,
             "instruction": 'action', "evidence_type": 'general'}),
             call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}),
-            audit_response(),
             {"role": "assistant", "content": '{"status":"abstained","answer":null}'}])
-        result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
+        verifier = Planner([audit_response()])
+        result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
+            Harness(verification=True, max_steps=3), sample("cal"), 0)
         self.assertEqual(result.status, "abstained", result.raw)
         self.assertEqual(result.usage["model_calls"], 4)
         self.assertEqual(result.usage["planner_calls"], 3)
@@ -120,14 +122,15 @@ class NativeVerificationTests(unittest.TestCase):
                 return r
         messages = [call("observe", {"start_seconds": i, "end_seconds": i+5,
                     "instruction": 'action', "evidence_type": 'general'}, str(i)) for i in [0, 10]]
-        messages += [call("verify_fresh", {}), audit_response(),
+        messages += [call("verify_fresh", {}),
                      {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]
         for enabled in [False, True]:
             planner = Planner(copy.deepcopy(messages))
-            result = EpisodeRunner(Scoped(), planner).run(Harness(memory=enabled, verification=True,
-                max_steps=5, history_turns=1), sample("cal"), 0)
+            verifier = Planner([audit_response()])
+            result = EpisodeRunner(Scoped(), planner, audit_planner=verifier).run(
+                Harness(memory=enabled, verification=True, max_steps=5, history_turns=1), sample("cal"), 0)
             self.assertEqual(result.status, "completed", result.raw)
-            fresh = planner.calls[3]["messages"]
+            fresh = verifier.calls[0]["messages"]
             self.assertIn("Evidence 10", str(fresh))
             self.assertEqual("Evidence 0" in str(fresh), enabled)
 
@@ -147,23 +150,27 @@ class NativeVerificationTests(unittest.TestCase):
 
         messages = [call("observe", {"start_seconds": i, "end_seconds": i+5,
                     "instruction": 'action', "evidence_type": 'general'}, str(i)) for i in [0, 10]]
-        messages += [call("verify_fresh", {}), audit_response(),
+        messages += [call("verify_fresh", {}),
                      {"role": "assistant", "content": '{"status":"answered","answer":"A"}'}]
         planner = Planner(messages)
+        verifier = Planner([audit_response()])
         with patch("moha.runtime.persistent_history", side_effect=capacity_limited):
-            result = EpisodeRunner(Scoped(), planner).run(
+            result = EpisodeRunner(Scoped(), planner, audit_planner=verifier).run(
                 Harness(memory=True, verification=True, max_steps=5, history_turns=1), sample("cal"), 0)
         self.assertEqual(result.status, "completed", result.raw)
-        fresh = planner.calls[3]["messages"]
+        fresh = verifier.calls[0]["messages"]
         self.assertIn("Evidence 10", str(fresh))
         self.assertNotIn("Evidence 0", str(fresh))
 
     def test_diagnosis_provider_failure_is_not_silently_retried(self):
         from flat.core.errors import ProviderError
-        planner = Planner([call("verify_fresh", {}), ProviderError("offline failure")])
-        result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
+        planner = Planner([call("verify_fresh", {})])
+        verifier = Planner([ProviderError("offline failure")])
+        result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
+            Harness(verification=True, max_steps=3), sample("cal"), 0)
         self.assertEqual(result.status, "error")
-        self.assertEqual(len(planner.calls), 2)
+        self.assertEqual(len(planner.calls), 1)
+        self.assertEqual(len(verifier.calls), 1)
         self.assertEqual(result.usage["model_calls"], 2)
 
 
@@ -178,7 +185,6 @@ class VerificationWireTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
                 self.responses = [call("verify_fresh", {}),
-                    audit_response(),
                     {"role": "assistant", "content": '{"status":"abstained","answer":null}'}]
             def post(self, **kwargs):
                 self.calls.append(json.loads(kwargs["body"]))
@@ -193,9 +199,14 @@ class VerificationWireTests(unittest.TestCase):
             k_compare=2, f_episode=256, b_video_episode=65536)
         planner = OpenAICompatiblePlannerClient(spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model="unit"),
             api_key="unit-key", budget=budget, transport=transport)
-        result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
+        verifier_transport = Transport()
+        verifier_transport.responses = [audit_response()]
+        verifier = OpenAICompatiblePlannerClient(spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model="unit"),
+            api_key="unit-key", budget=budget, transport=verifier_transport)
+        result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
+            Harness(verification=True, max_steps=3), sample("cal"), 0)
         self.assertEqual(result.status, "abstained", result.raw)
-        wire = transport.calls[1]
+        wire = verifier_transport.calls[0]
         self.assertEqual(len(wire["messages"]), 2)
         self.assertNotIn("response_format", wire)
         self.assertFalse(wire.get("tools"))
