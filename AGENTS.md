@@ -54,7 +54,9 @@
   verify_fresh; the automatic trigger is candidate pre-submit only, and the extra verifier
   call is outside the planner step budget. Do not create a budget-floor audit when no
   candidate exists. After automatic candidate submission, record the audit and finish the
-  episode with the candidate unchanged; do not inject advice or start refinement. A manual
+  episode after one deterministic adjudication; keep a supported candidate, and replace a
+  contradicted or insufficient candidate only when the audit names a supported alternative.
+  Do not inject advice or start refinement. A manual
   audit may return its ordinary tool result so the planner can continue its own flow, but it
   never requests corrective perception or rewrites an answer. Audit every complete option,
   the candidate, visible original observations with their full source context and caveats,

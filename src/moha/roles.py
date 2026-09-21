@@ -71,9 +71,9 @@ attribution only and is not a vote weight. Each trace has at most one equal vote
 Use null for unresolved failures, insufficient evidence or no suitable intervention.
 Do not invent candidates or parameters. Only held-out validation can promote a
 candidate. verification_basic performs one outcome audit when a candidate is submitted; the
-audit is an extra call outside the planner step budget, is recorded for diagnosis, and leaves the
-candidate unchanged. A manual verify_fresh call may consume the same allowance early. It cannot
-obtain new evidence, revise an answer, or start a refinement loop. Persistent evidence
+audit is an extra call outside the planner step budget and may replace a contradicted or
+insufficient candidate with its supported option. A manual verify_fresh call may consume the
+same allowance early. It cannot obtain new evidence or start a refinement loop. Persistent evidence
 memory restores history-evicted observations automatically within the shared context budget and
 expands bounded history to the planner step limit.
 It supplies no memory tools or planner notes and never triggers verification by itself.

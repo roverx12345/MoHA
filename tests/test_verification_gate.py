@@ -4,7 +4,7 @@ import unittest
 from moha.demo import sample
 from moha.models import Harness
 from moha.runtime import EpisodeRunner
-from moha.verification import diagnosis_messages, parse_audit
+from moha.verification import diagnosis_messages, parse_audit, adjudicate_candidate
 from test_runtime import Service as BaseService, Planner, call, VIDEO_OS_AVAILABLE
 
 
@@ -36,6 +36,27 @@ def observe(index=0):
 
 
 class AuditContractTests(unittest.TestCase):
+    def test_one_pass_adjudication_repairs_only_unsupported_candidates(self):
+        valid = json.loads(audit("supported", "B")["content"])
+        result = {"audit_status": "valid", "audit": valid}
+        final, decision = adjudicate_candidate({"status": "answered", "answer": "A"}, result, {"A", "B"})
+        self.assertEqual(final, {"status": "answered", "answer": "B"})
+        self.assertEqual(decision["mode"], "replace_candidate")
+        supported = json.loads(audit("supported", "A")["content"])
+        final, decision = adjudicate_candidate({"status": "answered", "answer": "A"},
+                                               {"audit_status": "valid", "audit": supported}, {"A", "B"})
+        self.assertEqual(final, {"status": "answered", "answer": "A"})
+        self.assertEqual(decision["mode"], "keep_candidate")
+
+    def test_invalid_or_ambiguous_audit_keeps_candidate(self):
+        candidate = {"status": "answered", "answer": "A"}
+        final, decision = adjudicate_candidate(candidate, {"audit_status": "invalid"}, {"A", "B"})
+        self.assertEqual(final, candidate)
+        self.assertEqual(decision["mode"], "keep_candidate")
+        ambiguous = json.loads(audit("supported", None)["content"])
+        final, _ = adjudicate_candidate(candidate, {"audit_status": "valid", "audit": ambiguous}, {"A", "B"})
+        self.assertEqual(final, candidate)
+
     def test_verification_is_extra_and_is_one_catalog_coordinate(self):
         from moha.catalog import catalog
         self.assertEqual(Harness(verification=True, max_steps=1).max_steps, 1)
@@ -106,12 +127,12 @@ class AuditContractTests(unittest.TestCase):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Video OS")
 class VerificationGateTests(unittest.TestCase):
-    def test_candidate_at_seven_is_audited_extra_and_committed_unchanged(self):
+    def test_candidate_at_seven_is_audited_extra_and_adjudicated(self):
         planner = Planner([observe(i*3) for i in range(6)] + [final("B"), final("A")])
         verifier = Planner([audit("contradicted", "A")])
         result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
             Harness(verification=True, max_steps=16), sample("cal"), 0)
-        self.assertEqual((result.status, result.answer), ("completed", "B"), result.raw)
+        self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
         self.assertEqual(result.usage["model_calls"], 8)
         self.assertEqual(result.usage["planner_calls"], 7)
         self.assertEqual(result.usage["verification_calls"], 1)
@@ -125,6 +146,8 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(last["tool_choice"], "auto")
         self.assertTrue(last["tools"])
         self.assertNotIn("verification_advice", str(last))
+        adjudication = next(e for e in result.events if e["kind"] == "verification_decision")
+        self.assertEqual((adjudication["mode"], adjudication["answer"]["answer"]), ("replace_candidate", "A"))
         self.assertEqual(result.events[-1]["kind"], "terminal")
 
     def test_non_submitting_search_loop_is_audited_only_when_it_submits(self):
@@ -166,13 +189,13 @@ class VerificationGateTests(unittest.TestCase):
                         if m.get("role") == "tool" and m.get("tool_call_id") == "verify")
         self.assertEqual(json.loads(feedback["content"]), results[0]["result"])
 
-    def test_abstention_is_audited_and_final_decision_is_not_forced_by_verifier(self):
+    def test_abstention_is_audited_and_supported_option_is_selected(self):
         abstain = {"role": "assistant", "content": '{"status":"abstained","answer":null}'}
         planner = Planner([abstain, final("A")])
         verifier = Planner([audit("supported", "B")])
         result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
             Harness(verification=True), sample("cal"), 0)
-        self.assertEqual((result.status, result.answer), ("abstained", None), result.raw)
+        self.assertEqual((result.status, result.answer), ("completed", "B"), result.raw)
         self.assertEqual(result.usage["model_calls"], 2)
         self.assertEqual(result.raw["verification_gate"]["candidate_answer"]["status"], "abstained")
 

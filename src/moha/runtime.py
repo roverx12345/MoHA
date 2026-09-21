@@ -7,13 +7,13 @@ from .records import normalize, visible_observations, observer_audit
 from .context import PLANNER_CONTEXT_POLICY, bounded_history, tool_context, fields
 from .memory import MEMORY_POLICY, MEMORY_CAPABILITY, ObservationMemory, persistent_history
 from .verification import (VERIFICATION_POLICY, VERIFICATION_CAPABILITY, diagnosis_messages,
-                           verification_tool, visible_records, parse_audit)
+                           verification_tool, visible_records, parse_audit, adjudicate_candidate)
 from .answers import (ANSWER_PARSING_POLICY, terminal_json_answer,
                       terminal_tool_call_answer)
 from .failures import ExecutionFailure, classify_failure
 
 
-PLANNER_COMPLETION_POLICY = "moha_single_pass_verification_v7"
+PLANNER_COMPLETION_POLICY = "moha_single_pass_verification_v8"
 PLANNER_PROMPT_POLICY = "moha_enabled_module_prompt_v2"
 
 
@@ -44,9 +44,11 @@ VERIFICATION_PROMPT = """Verification is a single-pass outcome audit.
 The harness makes one extra verifier call outside the planner step budget when you submit a
 candidate answer. The audit compares every option with the original observations and records
 support, contradiction, uncertainty and evidence IDs. It is diagnostic only: it does not revise
-the candidate, request more perception, or start a planning/refinement loop. Calling verify_fresh
-uses the same one-call allowance early; a later candidate is then kept as submitted without a
-second audit. Candidate answers and your hypotheses are unverified, not evidence."""
+request more perception or start a planning/refinement loop. If the audit identifies a supported
+alternative while the candidate is contradicted or insufficient, the harness may use that option
+as the final answer; otherwise it keeps the candidate. Calling verify_fresh uses the same one-call
+allowance early; a later candidate is then handled without a second audit. Candidate answers and
+your hypotheses are unverified, not evidence."""
 
 FINAL_ANSWER_PROMPT = """Resolve uncertainty using your judgment within the remaining budget."""
 
@@ -274,8 +276,13 @@ class EpisodeRunner:
                     if harness.verification and not verification_done:
                         emit(kind="candidate_answer", step=step, message=message,
                              answer=tool_answer, extraction=extraction)
-                        run_verification("pre_submit", projected + messages[turn_start:],
-                                         candidate=tool_answer)
+                        verification_result = run_verification("pre_submit", projected + messages[turn_start:],
+                                                               candidate=tool_answer)
+                        tool_answer, decision = adjudicate_candidate(
+                            tool_answer, verification_result, sample.task["options"])
+                        raw["verification_adjudication"] = decision
+                        emit(kind="verification_decision", step=step, candidate=decision["candidate"],
+                             answer=decision["answer"], mode=decision["mode"], reason=decision["reason"])
                     raw["state"]["final_answer"] = copy.deepcopy(tool_answer)
                     raw["final_answer"] = copy.deepcopy(tool_answer)
                     raw["answer"], raw["answer_extraction"] = tool_answer["answer"], extraction
@@ -311,7 +318,13 @@ class EpisodeRunner:
                                 current, extractor=self.extractor if final_call and not harness.verification else None)
                     if harness.verification and not verification_done and answer.get("status") in {"answered", "abstained"}:
                         emit(kind="candidate_answer", step=step, message=message, answer=answer, extraction=extraction)
-                        run_verification("pre_submit", projected + messages[turn_start:], candidate=answer)
+                        verification_result = run_verification("pre_submit", projected + messages[turn_start:],
+                                                               candidate=answer)
+                        answer, decision = adjudicate_candidate(
+                            answer, verification_result, sample.task["options"])
+                        raw["verification_adjudication"] = decision
+                        emit(kind="verification_decision", step=step, candidate=decision["candidate"],
+                             answer=decision["answer"], mode=decision["mode"], reason=decision["reason"])
                     if answer.get("status") == "invalid" and not final_call:
                         reason = "length_truncated" if truncated else "invalid_final_answer"
                         feedback = {"planner_output_feedback": {
@@ -326,8 +339,8 @@ class EpisodeRunner:
                              feedback=feedback, remaining_model_calls=harness.max_steps - planner_calls)
                         messages.append({"role": "user", "content": canonical(feedback)})
                         continue
-                    raw["state"]["final_answer"] = response.final_answer
-                    raw["final_answer"] = response.final_answer
+                    raw["state"]["final_answer"] = copy.deepcopy(answer)
+                    raw["final_answer"] = copy.deepcopy(answer)
                     raw["answer"], raw["answer_extraction"] = answer.get("answer"), extraction
                     raw["terminal_answer_status"] = answer.get("status")
                     raw["status"] = {"answered": "completed", "abstained": "abstained"}.get(
