@@ -284,15 +284,15 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 每步 `history_audit.memory` 记录缺失数、注入数、完整内容哈希、估算 token 和容量限制；
 `visible_observations` 继续来自实际输入。该注入不增加模型调用，也不触发 verification。
 
-`verification_basic` 是完整的 answer-audit capability：`trigger=pre_submit_or_budget_floor`、`max_verifications=1`、`reserve_steps=0`、`post_verify_mode=advisory_continue`。planner 提交有效候选答案或明确弃答时，harness 额外调用一次复核；若 planner 始终不提交，则在最后一个 planner 步骤之前额外复核。手动 `verify_fresh(diagnostic_question?, source_ids?)` 可以提前进入同一阶段，也占用这唯一一次复核额度；完成后不会再自动复核。
+`verification_basic` 是最基础的单次 answer-audit capability：`trigger=pre_submit`、`max_verifications=1`、`reserve_steps=0`、`post_verify_mode=audit_only`。planner 提交有效候选答案或明确弃答时，harness 额外调用一次 verifier；审计只记录逐选项的支持、矛盾、不足、证据 ID 和整体诊断，然后保留候选原样结束本题。若 planner 始终不提交，则不会因为预算接近耗尽而凭空发起审计。手动 `verify_fresh(diagnostic_question?, source_ids?)` 可以提前使用这唯一一次审计额度；它不会生成修正版、请求新感知或启动 refinement，之后也不会再自动调用第二次。
 
-16-step 示例：前 15 次仍是正常 planner/perception，第 16 次用于最终作答；自动复核是额外的第 17 次模型调用，不减少 16 个 planner 步骤。若第 7 次提前提交候选，复核是额外调用，后续 planner 仍可继续 search/observe，直到正常预算耗尽。只有最后一个 planner 步骤关闭工具；复核本身没有 corrective perception，也不增加第二次复核额度。
+16-step 示例：planner 仍最多进行 16 次调用；提交候选后，verifier 是额外调用，不减少 planner 步数，但候选在审计后直接作为本题结果。若先手动 `verify_fresh`，后续候选按 planner 原样提交且不再重复审计。审计本身没有 corrective perception、重规划或答案强制改写。
 
-复核输入为两个纯文本消息：题目、完整选项、候选答案、当前实际 planner 输入中可见的原始观察及其完整 observation context、明确标为 unverified 的 planner 请求和最近一条可见文本假设。没有工作笔记账本、旧对话列表、视频截图或参考答案。source_ids 只标记关注来源，不过滤其他可用的相反证据。verification 不直接读取 memory archive；memory 启用时只通过普通上下文注入与 verification 组合。注入因容量限制而失败的观察对 verification 同样不可见。最终 planner 获得同一份原始观察和复核结果。
+复核输入为两个纯文本消息：题目、完整选项、候选答案、当前实际 planner 输入中可见的原始观察及其完整 observation context、明确标为 unverified 的 planner 请求和最近一条可见文本假设。没有工作笔记账本、旧对话列表、视频截图或参考答案。source_ids 只标记关注来源，不过滤其他可用的相反证据。verification 不直接读取 memory archive；memory 启用时只通过普通上下文注入与 verification 组合。注入因容量限制而失败的观察对 verification 同样不可见。手动调用时，原始 verifier tool result 按普通工具消息返回；自动提交审计不会再产生后续 planner 回合。
 
 `invalid_final_answer` 是已结束的模型作答失败：按未答对计入校准和验证，保留原始状态、输出和全部实测成本，写入 episode 缓存并继续下一题；恢复运行时不重放该题。基础设施错误仍中止运行。
 
-复核请求 JSON 字段为 `support_status`（supported/contradicted/insufficient）、覆盖每个完整选项恰好一次的 `option_checks`、`best_supported_option` 和 `diagnosis`。每个 option check 包含标签、状态、原始 observation ID 和简短理由；本地校验选项覆盖、标签唯一性、来源存在性及最佳选项不与自身分析矛盾。通过文本 prompt 请求这一输出，不增加 provider 专属 response_format 或重试。格式无效时保留原文并明确标记 invalid，仍只给 planner 一次最终作答机会；基础设施错误保持 fatal。该复核判断是建议，最终 planner 可以维持、修改答案或弃答。
+复核请求 JSON 字段为 `support_status`（supported/contradicted/insufficient）、覆盖每个完整选项恰好一次的 `option_checks`、`best_supported_option` 和 `diagnosis`。每个 option check 包含标签、状态、原始 observation ID 和简短理由；本地校验选项覆盖、标签唯一性、来源存在性及最佳选项不与自身分析矛盾。通过文本 prompt 请求这一输出，不增加 provider 专属 response_format 或重试。格式无效时保留原文并明确标记 invalid；基础设施错误保持 fatal。该复核判断是诊断记录，既不覆盖候选答案，也不强制改成 abstain。
 
 新运行可以在 `models.verifier` 中单独配置 verification provider；它使用普通文本 JSON client，
 可以指向 Volc/Ark 或其他 OpenAI-compatible endpoint。未配置时保留旧配置的 planner endpoint

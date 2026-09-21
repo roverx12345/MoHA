@@ -1,7 +1,6 @@
 """The single native-tool episode loop over the pinned Flat runtime."""
 from __future__ import annotations
 import copy
-import json
 import uuid
 from .models import Harness, Sample, canonical
 from .records import normalize, visible_observations, observer_audit
@@ -14,7 +13,7 @@ from .answers import (ANSWER_PARSING_POLICY, terminal_json_answer,
 from .failures import ExecutionFailure, classify_failure
 
 
-PLANNER_COMPLETION_POLICY = "moha_pre_submit_verification_budget_v6"
+PLANNER_COMPLETION_POLICY = "moha_single_pass_verification_v7"
 PLANNER_PROMPT_POLICY = "moha_enabled_module_prompt_v2"
 
 
@@ -41,12 +40,13 @@ observations. This block contains perceptual evidence, never earlier planner bel
 Restoration uses the shared context allowance. A capacity notice means some old
 observations could not be restored; their absence does not establish absence in the video."""
 
-VERIFICATION_PROMPT = """Verification diagnoses are advisory.
-The harness audits your candidate answer once before
-commitment, or automatically before the last planner call. Calling verify_fresh enters
-this audit stage early. The audit is one extra call outside the planner step budget; remaining
-planner calls and tools stay available afterward. Candidate answers and your hypotheses are
-unverified, not evidence."""
+VERIFICATION_PROMPT = """Verification is a single-pass outcome audit.
+The harness makes one extra verifier call outside the planner step budget when you submit a
+candidate answer. The audit compares every option with the original observations and records
+support, contradiction, uncertainty and evidence IDs. It is diagnostic only: it does not revise
+the candidate, request more perception, or start a planning/refinement loop. Calling verify_fresh
+uses the same one-call allowance early; a later candidate is then kept as submitted without a
+second audit. Candidate answers and your hypotheses are unverified, not evidence."""
 
 FINAL_ANSWER_PROMPT = """Resolve uncertainty using your judgment within the remaining budget."""
 
@@ -150,7 +150,6 @@ class EpisodeRunner:
         verification_calls = 0
         memory = ObservationMemory() if harness.memory or harness.verification else None
         verification_done = False
-        verification_advice = None
         memory_history_turns = max(harness.history_turns, harness.max_steps)
         if raw["memory_capability"] is not None:
             raw["memory_capability"]["bounded_history_turns"] = memory_history_turns
@@ -190,7 +189,7 @@ class EpisodeRunner:
             module_names = {t["function"]["name"] for t in tools} - {"search", "observe"}
 
             def run_verification(trigger, available_messages, *, candidate=None, arguments=None, call_id=None):
-                nonlocal verification_calls, verification_done, verification_advice
+                nonlocal verification_calls, verification_done
                 if verification_done:
                     raise ValueError("the single verification has already been performed")
                 arguments = arguments or {}
@@ -208,7 +207,8 @@ class EpisodeRunner:
                 raw["verification_gate"] = {"trigger": trigger, "step": audit_step,
                                             "planner_step": planner_calls,
                                             "verification_call": verification_calls,
-                                            "candidate_answer": copy.deepcopy(candidate), "performed": True}
+                                            "candidate_answer": copy.deepcopy(candidate), "performed": True,
+                                            "post_verify_mode": VERIFICATION_CAPABILITY["post_verify_mode"]}
                 emit(kind="verification_request", step=audit_step, planner_step=planner_calls,
                      verification_call=verification_calls, messages=fresh, call_id=call_id, trigger=trigger)
                 diagnosis = self.audit_planner.call(messages=fresh, tools=[], tool_choice="none", parallel_tool_calls=False)
@@ -226,12 +226,6 @@ class EpisodeRunner:
                 except (ValueError, TypeError) as exc:
                     result.update(audit=None, audit_status="invalid", isError=True, error=str(exc))
                 raw["verification_gate"]["audit_status"] = result["audit_status"]
-                verification_advice = {"mode": "advisory", "candidate_answer": copy.deepcopy(candidate),
-                                      "observations": json.loads(fresh[1]["content"])["observations"],
-                                      "verification": tool_context(result, keep_state=False),
-                                      "instruction": "Treat this audit as advisory. Continue using remaining planner "
-                                                     "calls and tools when more evidence is useful. You may keep or "
-                                                     "revise the candidate. An invalid audit is not usable evidence."}
                 return result
 
             while planner_calls < harness.max_steps:
@@ -241,9 +235,6 @@ class EpisodeRunner:
                 else:
                     projected, audit = bounded_history(messages,
                         token_limit=harness.history_tokens, max_turns=harness.history_turns)
-                if harness.verification and not verification_done and harness.max_steps - planner_calls <= 1:
-                    run_verification("budget_floor", projected)
-                    continue
                 step = planner_calls + 1
                 final_call = harness.max_steps - planner_calls == 1
                 context = {"remaining_planner_calls": harness.max_steps - planner_calls,
@@ -253,8 +244,6 @@ class EpisodeRunner:
                     context["final_answer_required"] = True
                 if harness.verification:
                     context["verification_gate"] = {**VERIFICATION_CAPABILITY, "performed": verification_done}
-                if verification_advice is not None:
-                    context["verification_advice"] = verification_advice
                 if audit.get("memory", {}).get("capacity_limited"):
                     context["memory_capacity_notice"] = (
                         "Some previously observed evidence could not fit in the persistent memory block. "
@@ -287,8 +276,6 @@ class EpisodeRunner:
                              answer=tool_answer, extraction=extraction)
                         run_verification("pre_submit", projected + messages[turn_start:],
                                          candidate=tool_answer)
-                        if planner_calls < harness.max_steps:
-                            continue
                     raw["state"]["final_answer"] = copy.deepcopy(tool_answer)
                     raw["final_answer"] = copy.deepcopy(tool_answer)
                     raw["answer"], raw["answer_extraction"] = tool_answer["answer"], extraction
@@ -325,8 +312,6 @@ class EpisodeRunner:
                     if harness.verification and not verification_done and answer.get("status") in {"answered", "abstained"}:
                         emit(kind="candidate_answer", step=step, message=message, answer=answer, extraction=extraction)
                         run_verification("pre_submit", projected + messages[turn_start:], candidate=answer)
-                        if planner_calls < harness.max_steps:
-                            continue
                     if answer.get("status") == "invalid" and not final_call:
                         reason = "length_truncated" if truncated else "invalid_final_answer"
                         feedback = {"planner_output_feedback": {

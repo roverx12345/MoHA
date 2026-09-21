@@ -137,10 +137,4 @@ def visible_observations(messages):
                 walk(value)
             elif isinstance(value, dict):
                 walk(value.get("evidence_memory", []))
-                # Verification advice repeats exactly the original evidence supplied
-                # to the single audit, including only records visible on that call.
-                for key in ("finalization", "verification_advice"):
-                    advice = value.get(key)
-                    if isinstance(advice, dict):
-                        walk(advice.get("observations", []))
     return list(found.values())

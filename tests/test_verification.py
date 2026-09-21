@@ -89,14 +89,13 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(event["result"]["audit"], json.loads(text))
         audit_event = next(e for e in result.events if e["kind"] == "verification")
         self.assertEqual(audit_event["message"]["content"], text)
-        projected = json.loads(planner.calls[-1]["messages"][-1]["content"])
-        self.assertEqual(projected["verification_advice"]["verification"]["audit"], json.loads(text))
-        self.assertNotIn("diagnosis", projected)
-        self.assertNotIn("receipt", projected)
+        self.assertNotIn("verification_advice", str(planner.calls[-1]))
+        self.assertNotIn("diagnosis", str(planner.calls[-1]["messages"][-1]))
+        self.assertNotIn("receipt", str(planner.calls[-1]["messages"][-1]))
         self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
         self.assertNotIn("evidence_ledger", result.raw)
 
-    def test_budget_floor_audit_is_extra_before_the_last_planner_call(self):
+    def test_candidate_audit_is_extra_on_the_last_planner_call(self):
         planner = Planner([call("observe", {"start_seconds": 10, "end_seconds": 20,
             "instruction": 'action', "evidence_type": 'general'}),
             call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}),
@@ -109,7 +108,8 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(result.usage["planner_calls"], 3)
         self.assertEqual(result.usage["verification_calls"], 1)
         self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
-        self.assertEqual(result.raw["verification_gate"]["trigger"], "budget_floor")
+        self.assertEqual(result.raw["verification_gate"]["trigger"], "pre_submit")
+        self.assertEqual(result.raw["verification_gate"]["step"], 3)
         self.assertEqual(planner.calls[-1]["tools"], [])
 
     def test_verification_without_memory_cannot_recover_evicted_evidence(self):

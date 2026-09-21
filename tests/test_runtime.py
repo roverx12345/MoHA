@@ -360,7 +360,7 @@ class WireTests(unittest.TestCase):
                         self.assertNotIn("memory_ledger", context)
                         self.assertNotIn("memory_control", context)
                         self.assertEqual("verification_gate" in context, verification)
-                        self.assertEqual(len(transport.calls), 4 if verification else 3)
+                        self.assertEqual(len(transport.calls), 3)
                         self.assertEqual(result.usage["verification_calls"], int(verification))
 
     def test_gpt_and_qwen_keep_the_same_post_contract_for_terminal_json(self):
