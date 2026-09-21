@@ -346,7 +346,8 @@ class EpisodeRunner:
                     raw["answer"], raw["answer_extraction"] = answer.get("answer"), extraction
                     raw["terminal_answer_status"] = answer.get("status")
                     raw["status"] = {"answered": "completed", "abstained": "abstained"}.get(
-                        answer.get("status"), "invalid_final_answer" if final_call else "budget_exhausted")
+                        answer.get("status"), "invalid_final_answer" if final_call and verification_done
+                        else "budget_exhausted")
                     emit(kind="terminal", step=step, message=message, answer=answer)
                     break
                 if final_call:

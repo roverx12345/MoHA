@@ -305,7 +305,7 @@ class WireTests(unittest.TestCase):
         class Transport:
             def __init__(self, verification):
                 self.calls = []
-                self.responses = script() + ([audit(), final()] if verification else [])
+                self.responses = script() + ([final()] if verification else [])
 
             def post(self, **kwargs):
                 self.calls.append(json.loads(kwargs["body"]))
@@ -326,7 +326,15 @@ class WireTests(unittest.TestCase):
                         planner = OpenAICompatiblePlannerClient(
                             spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model="unit"),
                             api_key="unit-key", budget=budget, transport=transport)
-                        result = EpisodeRunner(Service(), planner).run(
+                        verifier = None
+                        verifier_transport = None
+                        if verification:
+                            verifier_transport = Transport(False)
+                            verifier_transport.responses = [audit()]
+                            verifier = OpenAICompatiblePlannerClient(
+                                spec=ProviderSpec(role=ProviderRole.GPT_TEXT, model="unit"),
+                                api_key="unit-key", budget=budget, transport=verifier_transport)
+                        result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
                             Harness(overview=overview, memory=memory, verification=verification), sample("cal"), 0)
                         self.assertEqual((result.status, result.answer), ("completed", "A"))
                         first, last = transport.calls[0], transport.calls[-1]
@@ -339,7 +347,7 @@ class WireTests(unittest.TestCase):
                         self.assertNotIn("no_novelty", prompt)
                         self.assertEqual("verification" in prompt.lower(), verification)
                         self.assertEqual("verify_fresh" in prompt, verification)
-                        self.assertEqual("final response" in prompt, verification)
+                        self.assertNotIn("final response", prompt)
                         self.assertIn("Resolve uncertainty using your judgment", prompt)
                         self.assertNotIn("assistant message", prompt)
                         self.assertNotIn("final JSON object", prompt)
@@ -352,7 +360,7 @@ class WireTests(unittest.TestCase):
                         self.assertNotIn("memory_ledger", context)
                         self.assertNotIn("memory_control", context)
                         self.assertEqual("verification_gate" in context, verification)
-                        self.assertEqual(len(transport.calls), 5 if verification else 3)
+                        self.assertEqual(len(transport.calls), 4 if verification else 3)
                         self.assertEqual(result.usage["verification_calls"], int(verification))
 
     def test_gpt_and_qwen_keep_the_same_post_contract_for_terminal_json(self):

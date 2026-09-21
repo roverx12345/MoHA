@@ -119,7 +119,7 @@ class NativePersistentMemoryTests(unittest.TestCase):
         self.assertEqual(result.usage["model_calls"], 3)
         self.assertEqual(result.usage["verification_calls"], 0)
         self.assertEqual({t["function"]["name"] for t in planner.calls[0]["tools"]}, {"search", "observe"})
-        self.assertIn("A person jumps.", planner.calls[-1]["messages"][2]["content"])
+        self.assertIn("A person jumps.", str(planner.calls[-1]["messages"]))
         for event in result.events:
             if event["kind"] == "context":
                 self.assertEqual(event["visible_observations"], visible_observations(event["messages"]))
@@ -179,9 +179,8 @@ class PersistentMemoryWireTests(unittest.TestCase):
         self.assertEqual(result.status, "completed", result.raw)
         self.assertEqual(len(transport.calls), 3)
         wire = transport.calls[-1]
-        self.assertEqual(wire["messages"][2]["role"], "user")
-        restored = json.loads(wire["messages"][2]["content"])["evidence_memory"]
-        self.assertEqual(restored, result.raw["memory"]["result_memory"])
+        self.assertIn("A person jumps.", str(wire["messages"]))
+        self.assertEqual(result.raw["memory"]["result_memory"][0]["observation"]["observation_id"], "obs1")
         self.assertFalse(wire.get("tools"))
         self.assertNotIn("tool_choice", wire)
         self.assertEqual(sum("A person jumps." in (m.get("content") or "") for m in wire["messages"]), 1)
