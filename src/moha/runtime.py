@@ -370,7 +370,7 @@ class EpisodeRunner:
                         result = dispatcher.error(exc, tool=call.name)
                         emit(kind="tool_result", step=step, tool=call.name, call_id=call.id, result=result)
                     else:
-                        if call.name == "verify_fresh":
+                        if call.name == "verify_fresh" and verification_done:
                             result = {"isError": True, "error": "verification has already been performed"}
                             emit(kind="tool_result", step=step, tool=call.name, call_id=call.id, result=result)
                         elif call.name in module_names:

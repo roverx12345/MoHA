@@ -131,15 +131,15 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(result.events[-1]["kind"], "terminal")
 
     def test_non_submitting_search_loop_gets_step_fifteen_audit_and_sixteen_final(self):
-        messages = [observe(0), observe(3)] + [call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}, str(i)) for i in range(12)]
+        messages = [observe(0), observe(3)] + [call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}, str(i)) for i in range(13)]
         messages += [final()]
         planner = Planner(messages)
         verifier = Planner([audit()])
         result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
             Harness(memory=True, verification=True, max_steps=16), sample("cal"), 0)
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
-        self.assertEqual((result.usage["model_calls"], result.usage["verification_calls"]), (16, 1))
-        self.assertEqual(result.usage["planner_calls"], 15)
+        self.assertEqual((result.usage["model_calls"], result.usage["verification_calls"]), (17, 1))
+        self.assertEqual(result.usage["planner_calls"], 16)
         self.assertEqual(result.raw["verification_gate"]["trigger"], "budget_floor")
         self.assertEqual(result.raw["verification_gate"]["step"], 15)
         self.assertEqual(len(json.loads(verifier.calls[0]["messages"][1]["content"])["observations"]), 2)
