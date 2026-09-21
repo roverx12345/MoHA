@@ -50,20 +50,21 @@
   report capacity limits. No relevance ranking or partial conflict selection.
   Keep raw archives and per-call visibility/budget audits. H0 uses the unchanged
   bounded-history path. Existing tool-memory runs retain their frozen implementation.
-- Verification is an answer-audit capability with one automatic pre-submit or
-  two-call budget-floor trigger, at most one audit including manual verify_fresh,
-  and exactly one final planner response afterward with all tools disabled.
-  Reserve those calls inside max_steps; do not add compute or corrective perception.
-  Audit every complete option, the candidate, visible original observations with their
-  full source context and caveats, and explicit unverified planner hypotheses in a
-  fresh text-only context. Verification must read only observations present in the
-  actual projected planner input and never access the memory archive directly; memory
-  composes with it only through ordinary context injection. No working-note ledger,
-  prior dialogue, screenshots or reference answer. Focus IDs must not hide contrary
-  available evidence. Request the support/option-checks/best-option/diagnosis JSON
-  audit; validate option coverage and source IDs once, retain invalid raw output
-  explicitly, and never retry the audit.
-  The final planner may keep, revise or abstain; the audit cannot impose an answer.
+- Verification is a single-pass outcome audit. Run at most one audit including manual
+  verify_fresh; the automatic trigger is candidate pre-submit only, and the extra verifier
+  call is outside the planner step budget. Do not create a budget-floor audit when no
+  candidate exists. After automatic candidate submission, record the audit and finish the
+  episode with the candidate unchanged; do not inject advice or start refinement. A manual
+  audit may return its ordinary tool result so the planner can continue its own flow, but it
+  never requests corrective perception or rewrites an answer. Audit every complete option,
+  the candidate, visible original observations with their full source context and caveats,
+  and explicit unverified planner hypotheses in a fresh text-only context. Verification must
+  read only observations present in the actual projected planner input and never access the
+  memory archive directly; memory composes with it only through ordinary context injection.
+  No working-note ledger, prior dialogue, screenshots or reference answer. Focus IDs must not
+  hide contrary available evidence. Request the support/option-checks/best-option/diagnosis
+  JSON audit; validate option coverage and source IDs once, retain invalid raw output
+  explicitly, and never retry the audit. The audit is diagnostic and cannot impose an answer.
 - Keep the terminal prompt transport-neutral and do not add output-schema or verbose
   no-tool instructions to suppress provider behavior. The final call advertises no
   executable tools. If a provider returns exactly one unadvertised `submit_answer`,
