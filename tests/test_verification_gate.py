@@ -53,15 +53,15 @@ class AuditContractTests(unittest.TestCase):
         self.assertEqual(final, {"status": "answered", "answer": "A"})
         self.assertEqual(decision["mode"], "keep_candidate")
 
-    def test_invalid_or_ambiguous_audit_keeps_or_abstains_candidate(self):
+    def test_invalid_or_ambiguous_audit_keeps_candidate(self):
         candidate = {"status": "answered", "answer": "A"}
         final, decision = adjudicate_candidate(candidate, {"audit_status": "invalid"}, {"A", "B"})
         self.assertEqual(final, candidate)
         self.assertEqual(decision["mode"], "keep_candidate")
         ambiguous = json.loads(audit("supported", None)["content"])
         final, decision = adjudicate_candidate(candidate, {"audit_status": "valid", "audit": ambiguous}, {"A", "B"})
-        self.assertEqual(final, {"status": "abstained", "answer": None})
-        self.assertEqual(decision["mode"], "abstain")
+        self.assertEqual(final, candidate)
+        self.assertEqual(decision["mode"], "keep_candidate")
 
     def test_verification_is_extra_and_is_one_catalog_coordinate(self):
         from moha.catalog import catalog
@@ -162,13 +162,13 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(len(payload["observations"]), 2)
         self.assertIn("A person jumps.", str(payload["observations"]))
 
-    def test_insufficient_candidate_abstains_without_supported_replacement(self):
+    def test_insufficient_candidate_is_preserved_without_supported_replacement(self):
         planner = Planner([final("A")])
         verifier = Planner([audit("insufficient", None)])
         result = EpisodeRunner(Service(), planner, audit_planner=verifier).run(
             Harness(verification=True, max_steps=1), sample("cal"), 0)
-        self.assertEqual((result.status, result.answer), ("abstained", None), result.raw)
-        self.assertEqual(result.raw["verification_adjudication"]["mode"], "abstain")
+        self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
+        self.assertEqual(result.raw["verification_adjudication"]["mode"], "keep_candidate")
 
     def test_candidate_at_seven_is_audited_extra_and_adjudicated(self):
         planner = Planner([observe(i*3) for i in range(6)] + [final("B"), final("A")])

@@ -36,8 +36,9 @@ best_supported_option: one task option label, or null when no option is supporte
 diagnosis: nonempty explanation of the evidence and its limits.
 Your audit is a one-pass adjudication input. It does not start a planning/refinement loop or call
 verification_observe more than once. The harness may use a supported alternative to replace a candidate
-that is contradicted or insufficient. If no supported replacement exists, an insufficient candidate
-must remain unresolved rather than being presented as supported."""
+that is contradicted or insufficient. If no supported replacement exists, preserve the planner's submitted
+candidate without claiming that the audit supports it. An abstained candidate remains abstained. The audit
+must never turn uncertainty into a new answer."""
 
 
 
@@ -191,9 +192,12 @@ def adjudicate_candidate(candidate, result, option_labels):
                         selected_option=best,
                         reason="candidate was not supported and the audit identified a supported option")
     elif candidate.get("status") == "answered" and checks.get(current) in {"insufficient", "contradicted"}:
-        final = {"status": "abstained", "answer": None}
-        decision.update(mode="abstain", answer=copy.deepcopy(final),
-                        reason="candidate was not supported and the audit found no supported replacement")
+        # Verification is an answer audit, not an abstention policy. When it cannot
+        # identify a supported replacement, retaining the planner's candidate avoids
+        # converting every unresolved audit into a guaranteed wrong abstention. The
+        # decision receipt still records that the candidate was not supported.
+        decision.update(mode="keep_candidate", answer=copy.deepcopy(final),
+                        reason="audit found no supported replacement; preserve the planner candidate")
     else:
         decision["reason"] = "the audit did not identify a supported replacement"
     return final, decision

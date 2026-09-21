@@ -48,10 +48,10 @@ support, contradiction, uncertainty and evidence IDs. It is diagnostic only: it 
 request more perception or start a planning/refinement loop. The verifier may make one targeted
 observation when the current evidence is insufficient, then it must emit one final audit. If the
 audit identifies a supported alternative while the candidate is contradicted or insufficient, the
-harness may use that option as the final answer. An insufficient candidate with no supported
-replacement is abstained. Calling verify_fresh uses the same one-call allowance early; a later
-candidate is then handled without a second audit. Candidate answers and your hypotheses are
-unverified, not evidence."""
+harness may use that option as the final answer. If no supported replacement exists, preserve the
+planner candidate; never fabricate support, and leave an already-abstained candidate abstained.
+Calling verify_fresh uses the same one-call allowance early; a later candidate is then handled
+without a second audit. Candidate answers and your hypotheses are unverified, not evidence."""
 
 FINAL_ANSWER_PROMPT = """Resolve uncertainty using your judgment within the remaining budget."""
 
