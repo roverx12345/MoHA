@@ -277,8 +277,8 @@ def prepare(config_path, repo):
     if type(config.get("retrieval_extension", False)) is not bool:
         raise ValueError("retrieval_extension must be boolean")
     models = config["models"]
-    if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "extractor"}:
-        raise ValueError("models require planner/judge and optionally extractor; selection is deterministic")
+    if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "extractor", "verifier"}:
+        raise ValueError("models require planner/judge and optionally verifier/extractor; selection is deterministic")
     planner_endpoints, endpoints, lanes = lane_clients(
         models, config["observer"]["base_url"], budget, planner_max_inflight)
     clients = {"judges": [text_client(models["judge"], budget, structured=True) for _ in range(diagnosis_workers)],
@@ -344,13 +344,17 @@ def build(prepared, store):
         if asr:
             service.asr_perception_model = asr["spec"]["model"]
         planner_config = config["models"]["planner"]
-        audit_config = {**planner_config, "spec": {**planner_config["spec"],
-                        "base_url": clients["planner"].spec.base_url, "retries": 0}}
-        audit_planner = text_client(audit_config, prepared["budget"])
-        gate = getattr(clients["planner"], "_moha_call_gate", None)
-        if gate is not None:
-            audit_planner = EndpointCallLimiter(audit_planner, gate,
-                prepared["planner_max_inflight_per_endpoint"])
+        audit_planner = clients.get("verifier")
+        if audit_planner is None:
+            # Backward-compatible fallback for frozen configs. New runs should
+            # provide models.verifier so the audit is genuinely independent.
+            audit_config = {**planner_config, "spec": {**planner_config["spec"],
+                            "base_url": clients["planner"].spec.base_url, "retries": 0}}
+            audit_planner = text_client(audit_config, prepared["budget"])
+            gate = getattr(clients["planner"], "_moha_call_gate", None)
+            if gate is not None:
+                audit_planner = EndpointCallLimiter(audit_planner, gate,
+                    prepared["planner_max_inflight_per_endpoint"])
         runners.append(EpisodeRunner(service, clients["planner"], extractor=clients.get("extractor"),
             audit_planner=audit_planner,
             asr_backend="whisper" if asr else observer["backend"], store=store, lane=lane))

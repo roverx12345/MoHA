@@ -9,7 +9,8 @@ MEMORY_POLICY = "moha_persistent_evidence_injection_v1"
 MEMORY_CAPABILITY = {
     "mode": "automatic_context_injection", "max_memory_tokens": 6000,
     "placement": "before_recent_history", "selection": "all_missing_or_none",
-    "budget": "shared_history_allowance", "tools": [],
+    "budget": "shared_history_allowance", "bounded_history": "planner_step_limit",
+    "tools": [],
 }
 
 

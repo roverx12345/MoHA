@@ -43,9 +43,10 @@ observations could not be restored; their absence does not establish absence in 
 
 VERIFICATION_PROMPT = """Verification diagnoses are advisory.
 The harness audits your candidate answer once before
-commitment, or automatically when two model calls remain. Calling verify_fresh enters
-this audit stage early. The audit uses one shared call and is followed by exactly one
-final response. Candidate answers and your hypotheses are unverified, not evidence."""
+commitment, or automatically before the last planner call. Calling verify_fresh enters
+this audit stage early. The audit is one extra call outside the planner step budget; remaining
+planner calls and tools stay available afterward. Candidate answers and your hypotheses are
+unverified, not evidence."""
 
 FINAL_ANSWER_PROMPT = """Resolve uncertainty using your judgment within the remaining budget."""
 
@@ -129,7 +130,7 @@ class EpisodeRunner:
         raw["planner_completion_policy"] = PLANNER_COMPLETION_POLICY
         raw["answer_parsing_policy"] = ANSWER_PARSING_POLICY
         raw["memory_policy"] = MEMORY_POLICY if harness.memory else None
-        raw["memory_capability"] = copy.deepcopy(MEMORY_CAPABILITY) if harness.memory else None
+        raw["memory_capability"] = (copy.deepcopy(MEMORY_CAPABILITY) if harness.memory else None)
         raw["verification_policy"] = VERIFICATION_POLICY if harness.verification else None
         raw["verification_capability"] = copy.deepcopy(VERIFICATION_CAPABILITY) if harness.verification else None
         raw["execution_lane"] = {"index": self.lane, "observer_endpoint": getattr(self.service, "base_url", None)}
@@ -145,10 +146,14 @@ class EpisodeRunner:
                              {"sample_id": sample.sample_id, "sample_hash": sample.id, "harness_id": harness.id,
                               "repeat": repeat, "execution_lane": raw["execution_lane"]}, immutable=True)
         session_id = None
-        used_calls = 0
+        planner_calls = 0
+        verification_calls = 0
         memory = ObservationMemory() if harness.memory or harness.verification else None
         verification_done = False
-        finalization = None
+        verification_advice = None
+        memory_history_turns = max(harness.history_turns, harness.max_steps)
+        if raw["memory_capability"] is not None:
+            raw["memory_capability"]["bounded_history_turns"] = memory_history_turns
         try:
             started = self.service.begin_episode(sample.asset_id)
             session_id = str(started["session_id"])
@@ -185,11 +190,9 @@ class EpisodeRunner:
             module_names = {t["function"]["name"] for t in tools} - {"search", "observe"}
 
             def run_verification(trigger, available_messages, *, candidate=None, arguments=None, call_id=None):
-                nonlocal used_calls, verification_done, finalization
+                nonlocal verification_calls, verification_done, verification_advice
                 if verification_done:
                     raise ValueError("the single verification has already been performed")
-                if harness.max_steps - used_calls < VERIFICATION_CAPABILITY["reserve_steps"]:
-                    raise ValueError("verification requires one audit call and one final response")
                 arguments = arguments or {}
                 if set(arguments) - {"diagnostic_question", "source_ids"}:
                     raise ValueError("unknown verification argument")
@@ -199,14 +202,18 @@ class EpisodeRunner:
                                    and m["content"].strip()), None)
                 fresh = diagnosis_messages(sample.task, records, candidate_answer=candidate,
                                            planner_hypotheses=hypotheses, **arguments)
-                used_calls += 1
+                verification_calls += 1
                 verification_done = True
-                audit_step = used_calls
+                audit_step = planner_calls
                 raw["verification_gate"] = {"trigger": trigger, "step": audit_step,
+                                            "planner_step": planner_calls,
+                                            "verification_call": verification_calls,
                                             "candidate_answer": copy.deepcopy(candidate), "performed": True}
-                emit(kind="verification_request", step=audit_step, messages=fresh, call_id=call_id, trigger=trigger)
+                emit(kind="verification_request", step=audit_step, planner_step=planner_calls,
+                     verification_call=verification_calls, messages=fresh, call_id=call_id, trigger=trigger)
                 diagnosis = self.audit_planner.call(messages=fresh, tools=[], tool_choice="none", parallel_tool_calls=False)
-                emit(kind="verification", step=audit_step, message=diagnosis.message(),
+                emit(kind="verification", step=audit_step, planner_step=planner_calls,
+                     verification_call=verification_calls, message=diagnosis.message(),
                      metadata=dict(diagnosis.metadata), call_id=call_id, trigger=trigger)
                 result = {"diagnosis": diagnosis.message().get("content"), "receipt": dict(diagnosis.metadata)}
                 try:
@@ -219,44 +226,47 @@ class EpisodeRunner:
                 except (ValueError, TypeError) as exc:
                     result.update(audit=None, audit_status="invalid", isError=True, error=str(exc))
                 raw["verification_gate"]["audit_status"] = result["audit_status"]
-                finalization = {"mode": "finalize_only", "candidate_answer": copy.deepcopy(candidate),
-                                "observations": json.loads(fresh[1]["content"])["observations"],
-                                "verification": tool_context(result, keep_state=False),
-                                "instruction": "Give your final response using the original evidence and this audit. "
-                                               "You may keep or revise your candidate. An invalid audit is not usable "
-                                               "verification and must not be treated as evidence."}
+                verification_advice = {"mode": "advisory", "candidate_answer": copy.deepcopy(candidate),
+                                      "observations": json.loads(fresh[1]["content"])["observations"],
+                                      "verification": tool_context(result, keep_state=False),
+                                      "instruction": "Treat this audit as advisory. Continue using remaining planner "
+                                                     "calls and tools when more evidence is useful. You may keep or "
+                                                     "revise the candidate. An invalid audit is not usable evidence."}
                 return result
 
-            while used_calls < harness.max_steps:
-                if harness.memory and not verification_done:
+            while planner_calls < harness.max_steps:
+                if harness.memory:
                     projected, audit = persistent_history(messages, memory,
-                        token_limit=harness.history_tokens, max_turns=harness.history_turns)
+                        token_limit=harness.history_tokens, max_turns=memory_history_turns)
                 else:
                     projected, audit = bounded_history(messages,
                         token_limit=harness.history_tokens, max_turns=harness.history_turns)
-                if harness.verification and not verification_done and harness.max_steps - used_calls <= 2:
+                if harness.verification and not verification_done and harness.max_steps - planner_calls <= 1:
                     run_verification("budget_floor", projected)
                     continue
-                step = used_calls + 1
-                final_call = verification_done or harness.max_steps - used_calls == 1
-                context = {"remaining_planner_calls": 1 if verification_done else harness.max_steps - used_calls - int(harness.verification),
-                           "remaining_model_calls": harness.max_steps - used_calls}
+                step = planner_calls + 1
+                final_call = harness.max_steps - planner_calls == 1
+                context = {"remaining_planner_calls": harness.max_steps - planner_calls,
+                           "remaining_model_calls": harness.max_steps - planner_calls,
+                           "verification_calls_extra": verification_calls}
                 if final_call:
                     context["final_answer_required"] = True
                 if harness.verification:
                     context["verification_gate"] = {**VERIFICATION_CAPABILITY, "performed": verification_done}
-                if finalization is not None:
-                    context["finalization"] = finalization
+                if verification_advice is not None:
+                    context["verification_advice"] = verification_advice
                 if audit.get("memory", {}).get("capacity_limited"):
                     context["memory_capacity_notice"] = (
                         "Some previously observed evidence could not fit in the persistent memory block. "
                         "The retained interaction is unchanged; omitted evidence is unavailable on this call.")
-                call_tools = [] if final_call else tools
+                call_tools = [] if final_call else [tool for tool in tools if not (
+                    verification_done and tool["function"]["name"] == "verify_fresh")]
                 audit["history_token_limit"] = harness.history_tokens
+                audit["history_turns_limit"] = memory_history_turns if harness.memory else harness.history_turns
                 projected.append({"role": "user", "content": canonical(context)})
                 emit(kind="context", step=step, messages=projected, context=context, history_audit=audit,
                      visible_observations=visible_observations(projected), tools=call_tools)
-                used_calls += 1
+                planner_calls += 1
                 response = self.planner.call(messages=projected, tools=call_tools,
                                              tool_choice="auto", parallel_tool_calls=False)
                 message = response.message()
@@ -277,7 +287,8 @@ class EpisodeRunner:
                              answer=tool_answer, extraction=extraction)
                         run_verification("pre_submit", projected + messages[turn_start:],
                                          candidate=tool_answer)
-                        continue
+                        if planner_calls < harness.max_steps:
+                            continue
                     raw["state"]["final_answer"] = copy.deepcopy(tool_answer)
                     raw["final_answer"] = copy.deepcopy(tool_answer)
                     raw["answer"], raw["answer_extraction"] = tool_answer["answer"], extraction
@@ -314,7 +325,8 @@ class EpisodeRunner:
                     if harness.verification and not verification_done and answer.get("status") in {"answered", "abstained"}:
                         emit(kind="candidate_answer", step=step, message=message, answer=answer, extraction=extraction)
                         run_verification("pre_submit", projected + messages[turn_start:], candidate=answer)
-                        continue
+                        if planner_calls < harness.max_steps:
+                            continue
                     if answer.get("status") == "invalid" and not final_call:
                         reason = "length_truncated" if truncated else "invalid_final_answer"
                         feedback = {"planner_output_feedback": {
@@ -324,9 +336,9 @@ class EpisodeRunner:
                                        "a concise JSON object with status 'answered' and answer equal to "
                                        "one option label, or status 'abstained' and answer null. "
                                        "Do not repeat the unfinished explanation.",
-                            "remaining_model_calls": harness.max_steps - used_calls}}
+                            "remaining_model_calls": harness.max_steps - planner_calls}}
                         emit(kind="answer_recovery", step=step, reason=reason, extraction=extraction,
-                             feedback=feedback, remaining_model_calls=harness.max_steps - used_calls)
+                             feedback=feedback, remaining_model_calls=harness.max_steps - planner_calls)
                         messages.append({"role": "user", "content": canonical(feedback)})
                         continue
                     raw["state"]["final_answer"] = response.final_answer
@@ -334,17 +346,17 @@ class EpisodeRunner:
                     raw["answer"], raw["answer_extraction"] = answer.get("answer"), extraction
                     raw["terminal_answer_status"] = answer.get("status")
                     raw["status"] = {"answered": "completed", "abstained": "abstained"}.get(
-                        answer.get("status"), "invalid_final_answer" if verification_done else "budget_exhausted")
+                        answer.get("status"), "invalid_final_answer" if final_call else "budget_exhausted")
                     emit(kind="terminal", step=step, message=message, answer=answer)
                     break
                 if final_call:
                     # A provider may ignore tool_choice. Do not spend perception
                     # budget on evidence the planner will never have a turn to use.
-                    raw["status"] = "invalid_final_answer" if verification_done else "budget_exhausted"
-                    terminal = {"status": "invalid" if verification_done else "budget_exhausted", "answer": None}
+                    raw["status"] = "budget_exhausted"
+                    terminal = {"status": "budget_exhausted", "answer": None}
                     raw["terminal_answer_status"] = terminal["status"]
                     emit(kind="terminal", step=step, message=message,
-                         reason="tool_calls_after_verification" if verification_done else "tool_calls_on_reserved_final_call",
+                         reason="tool_calls_on_reserved_final_call",
                          answer=terminal)
                     break
                 # Keep the shared native contract: execute returned calls in order,
@@ -358,8 +370,8 @@ class EpisodeRunner:
                         result = dispatcher.error(exc, tool=call.name)
                         emit(kind="tool_result", step=step, tool=call.name, call_id=call.id, result=result)
                     else:
-                        if verification_done:
-                            result = {"isError": True, "error": "verification has completed; remaining tool calls are disabled"}
+                        if call.name == "verify_fresh":
+                            result = {"isError": True, "error": "verification has already been performed"}
                             emit(kind="tool_result", step=step, tool=call.name, call_id=call.id, result=result)
                         elif call.name in module_names:
                             try:
@@ -382,10 +394,12 @@ class EpisodeRunner:
             raw["failure"] = classify_failure(exc)
             if raw.get("verification_gate", {}).get("performed"):
                 raw["failure"].update(retryable=False, automatic_resume_blocked="verification_already_started")
-            emit(kind="error", step=used_calls,
+            emit(kind="error", step=planner_calls,
                  error_type=type(exc).__name__, failure=raw["failure"])
         finally:
-            raw["model_calls_used"] = used_calls
+            raw["planner_calls_used"] = planner_calls
+            raw["verification_calls_used"] = verification_calls
+            raw["model_calls_used"] = planner_calls + verification_calls
             if harness.memory:
                 raw["memory"] = memory.read()
             if session_id is not None:

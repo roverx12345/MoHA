@@ -89,19 +89,22 @@ class NativeVerificationTests(unittest.TestCase):
         audit_event = next(e for e in result.events if e["kind"] == "verification")
         self.assertEqual(audit_event["message"]["content"], text)
         projected = json.loads(planner.calls[-1]["messages"][-2]["content"])
-        self.assertEqual(projected["audit"], json.loads(text))
+        self.assertEqual(projected["verification_advice"]["verification"]["audit"], json.loads(text))
         self.assertNotIn("diagnosis", projected)
         self.assertNotIn("receipt", projected)
         self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
         self.assertNotIn("evidence_ledger", result.raw)
 
-    def test_budget_floor_audit_preserves_reserved_final_call(self):
+    def test_budget_floor_audit_is_extra_before_the_last_planner_call(self):
         planner = Planner([call("observe", {"start_seconds": 10, "end_seconds": 20,
-            "instruction": 'action', "evidence_type": 'general'}), audit_response(),
+            "instruction": 'action', "evidence_type": 'general'}),
+            call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}),
+            audit_response(),
             {"role": "assistant", "content": '{"status":"abstained","answer":null}'}])
         result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
         self.assertEqual(result.status, "abstained", result.raw)
-        self.assertEqual(result.usage["model_calls"], 3)
+        self.assertEqual(result.usage["model_calls"], 4)
+        self.assertEqual(result.usage["planner_calls"], 3)
         self.assertEqual(result.usage["verification_calls"], 1)
         self.assertEqual(planner.calls[-1]["tool_choice"], "auto")
         self.assertEqual(result.raw["verification_gate"]["trigger"], "budget_floor")

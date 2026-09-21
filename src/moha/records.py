@@ -105,6 +105,8 @@ def normalize(sample: Sample, harness: Harness, repeat: int, raw: dict) -> Episo
         answer = None
     status = raw.get("status", "error")
     usage = usage_from(events, raw.get("perception_receipt"))
+    usage["planner_calls"] = raw.get("planner_calls_used", usage["planner_calls"])
+    usage["verification_calls"] = raw.get("verification_calls_used", usage["verification_calls"])
     usage["model_calls"] = raw.get("model_calls_used", usage["model_calls"])
     return Episode(sample.sample_id, sample.id, harness.id, repeat, list(sample.video_key),
                    sample.expected_answer, answer, status, events,
@@ -135,9 +137,10 @@ def visible_observations(messages):
                 walk(value)
             elif isinstance(value, dict):
                 walk(value.get("evidence_memory", []))
-                # Finalization repeats exactly the original evidence supplied to
-                # the single audit, including only visible records without memory.
-                finalization = value.get("finalization")
-                if isinstance(finalization, dict):
-                    walk(finalization.get("observations", []))
+                # Verification advice repeats exactly the original evidence supplied
+                # to the single audit, including only records visible on that call.
+                for key in ("finalization", "verification_advice"):
+                    advice = value.get(key)
+                    if isinstance(advice, dict):
+                        walk(advice.get("observations", []))
     return list(found.values())

@@ -130,7 +130,7 @@ class NativePersistentMemoryTests(unittest.TestCase):
         self.assertEqual(other.status, "completed", other.raw)
         self.assertNotIn("A person jumps.", str(without.calls[-1]["messages"]))
 
-    def test_verifier_uses_injected_records_and_finalization_does_not_double_inject(self):
+    def test_verifier_uses_injected_records_and_advice_does_not_double_inject(self):
         planner = Planner([observe(), call("search", {"query": "next", "start_seconds": 0, "end_seconds": 60}),
                            final(), audit(), final()])
         result = EpisodeRunner(Service(), planner).run(
@@ -139,7 +139,16 @@ class NativePersistentMemoryTests(unittest.TestCase):
         self.assertEqual(result.usage["verification_calls"], 1)
         self.assertIn("A person jumps.", str(planner.calls[-2]["messages"]))
         self.assertNotIn('"evidence_memory"', str(planner.calls[-1]["messages"]))
-        self.assertEqual(planner.calls[-1]["tools"], [])
+        self.assertTrue(planner.calls[-1]["tools"])
+
+    def test_memory_basic_expands_bounded_history_to_planner_step_limit(self):
+        planner = Planner([observe(), observe(3), final()])
+        result = EpisodeRunner(Service(), planner).run(
+            Harness(memory=True, max_steps=3, history_turns=1), sample("cal"), 0)
+        self.assertEqual(result.status, "completed", result.raw)
+        contexts = [e for e in result.events if e["kind"] == "context"]
+        self.assertEqual(contexts[-1]["history_audit"]["history_turns_limit"], 3)
+        self.assertEqual(result.raw["memory_capability"]["bounded_history_turns"], 3)
 
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Flat")

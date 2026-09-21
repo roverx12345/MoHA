@@ -70,9 +70,11 @@ never map a failure label mechanically to a module. Confidence describes the
 attribution only and is not a vote weight. Each trace has at most one equal vote.
 Use null for unresolved failures, insufficient evidence or no suitable intervention.
 Do not invent candidates or parameters. Only held-out validation can promote a
-candidate. verification_basic automatically audits once before commitment or at the two-call
-budget floor, then permits one final response. It cannot obtain new evidence. Persistent evidence
-memory restores history-evicted observations automatically within the shared context budget.
+candidate. verification_basic automatically audits once before commitment or before the last
+planner call; the audit is an extra call outside the planner step budget, and remaining planner
+calls and tools stay available afterward. It cannot obtain new evidence. Persistent evidence
+memory restores history-evicted observations automatically within the shared context budget and
+expands bounded history to the planner step limit.
 It supplies no memory tools or planner notes and never triggers verification by itself.
 For an initial observer diagnosis use null: observer probes must precede its
 final recommendation. No validation or test samples are provided or requested."""

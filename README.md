@@ -275,6 +275,8 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 相同的带来源范围的副本，原始账本不改动，同 ID 下的不同内容和不同范围全部保留。
 
 注入块最多 6000 个估算 token，并占用原 `history_tokens` 额度（默认 18000），不是额外预算。
+启用 `memory_basic` 时，bounded history 的轮数上限提升到 planner 的步数上限；默认
+`max_steps=16`，因此从默认的 8 轮扩大为 16 轮。H0 的 8 轮 bounded history 保持不变。
 需要缩减近期历史时重新计算缺失观察，直到被进一步移除的观察也纳入注入块。
 为保持最小实现，不做摘要、相关性筛选或固定早期/近期选择：完整缺失集合无法容纳时，
 保持原有 bounded history 并明确告知容量不足，不选择性隐藏冲突的一侧。
@@ -282,15 +284,20 @@ perception calibration。没有全局 LLM selector，也不接受 `models.select
 每步 `history_audit.memory` 记录缺失数、注入数、完整内容哈希、估算 token 和容量限制；
 `visible_observations` 继续来自实际输入。该注入不增加模型调用，也不触发 verification。
 
-`verification_basic` 是完整的 answer-audit capability：`trigger=pre_submit_or_budget_floor`、`max_verifications=1`、`reserve_steps=2`、`post_verify_mode=finalize_only`。planner 提交有效候选答案或明确弃答时，harness 暂不提交，先做一次独立复核，再给 planner 恰好一轮最终回答。若 planner 始终不提交，剩余两次调用时自动进入复核。手动 `verify_fresh(diagnostic_question?, source_ids?)` 可以提前进入同一阶段，也占用这唯一一次复核额度；完成后不会再自动复核。
+`verification_basic` 是完整的 answer-audit capability：`trigger=pre_submit_or_budget_floor`、`max_verifications=1`、`reserve_steps=0`、`post_verify_mode=advisory_continue`。planner 提交有效候选答案或明确弃答时，harness 额外调用一次复核；若 planner 始终不提交，则在最后一个 planner 步骤之前额外复核。手动 `verify_fresh(diagnostic_question?, source_ids?)` 可以提前进入同一阶段，也占用这唯一一次复核额度；完成后不会再自动复核。
 
-16-call 示例：前 14 次用于正常 planning/perception，第 15 次自动复核，第 16 次最终作答；若第 7 次提前提交候选，第 8 次复核、第 9 次最终作答后结束。所有调用均在原 `max_steps` 内；verification 至少需要两次总调用。复核后的最终请求不提供工具定义；runtime 接收严格合法的终止答案调用，但不执行 provider 返回的任何调用，包括同一批请求中排在 verify_fresh 后面的操作。复核后没有 corrective perception，也不调用额外的答案提取模型；最终回答无效时记录 invalid_final_answer，不赠送修复轮次；即使总预算尚有余量，该最终阶段也只允许一轮回答。
+16-step 示例：前 15 次仍是正常 planner/perception，第 16 次用于最终作答；自动复核是额外的第 17 次模型调用，不减少 16 个 planner 步骤。若第 7 次提前提交候选，复核是额外调用，后续 planner 仍可继续 search/observe，直到正常预算耗尽。只有最后一个 planner 步骤关闭工具；复核本身没有 corrective perception，也不增加第二次复核额度。
 
 复核输入为两个纯文本消息：题目、完整选项、候选答案、当前实际 planner 输入中可见的原始观察及其完整 observation context、明确标为 unverified 的 planner 请求和最近一条可见文本假设。没有工作笔记账本、旧对话列表、视频截图或参考答案。source_ids 只标记关注来源，不过滤其他可用的相反证据。verification 不直接读取 memory archive；memory 启用时只通过普通上下文注入与 verification 组合。注入因容量限制而失败的观察对 verification 同样不可见。最终 planner 获得同一份原始观察和复核结果。
 
 `invalid_final_answer` 是已结束的模型作答失败：按未答对计入校准和验证，保留原始状态、输出和全部实测成本，写入 episode 缓存并继续下一题；恢复运行时不重放该题。基础设施错误仍中止运行。
 
 复核请求 JSON 字段为 `support_status`（supported/contradicted/insufficient）、覆盖每个完整选项恰好一次的 `option_checks`、`best_supported_option` 和 `diagnosis`。每个 option check 包含标签、状态、原始 observation ID 和简短理由；本地校验选项覆盖、标签唯一性、来源存在性及最佳选项不与自身分析矛盾。通过文本 prompt 请求这一输出，不增加 provider 专属 response_format 或重试。格式无效时保留原文并明确标记 invalid，仍只给 planner 一次最终作答机会；基础设施错误保持 fatal。该复核判断是建议，最终 planner 可以维持、修改答案或弃答。
+
+新运行可以在 `models.verifier` 中单独配置 verification provider；它使用普通文本 JSON client，
+可以指向 Volc/Ark 或其他 OpenAI-compatible endpoint。未配置时保留旧配置的 planner endpoint
+fallback，但这只适合兼容历史配置，不具备独立 verifier 的隔离性。实际 audit provider/model
+写入 verification event receipt。
 
 默认 H0 不增加模块工具或自动复核。catalog 中 `planner.module.verification_basic` 仍是一次单坐标布尔干预，但其含义包含工具、状态、触发与预算控制；memory 的自动证据恢复独立执行。verification 只读取实际投影中可见的观察，二者通过上下文组合，没有直接 archive 路由。
 
@@ -378,9 +385,9 @@ reply, so an empty reply cannot reuse an old answer cue. A configured evaluation
 extractor is used only for a terminal unresolved text reply without verification,
 not intermediate recovery or the fixed post-audit final response.
 
-The completion policy is moha_pre_submit_verification_budget_v5, the prompt policy is
+The completion policy is moha_pre_submit_verification_budget_v6, the prompt policy is
 moha_enabled_module_prompt_v2, the answer parsing policy is moha_terminal_json_v3,
-the verification policy is moha_answer_audit_gate_v3, and persistent memory uses
+the verification policy is moha_optionwise_answer_audit_v4, and persistent memory uses
 moha_persistent_evidence_injection_v1. These behavior/input
 changes require a new full calibration from H0 before claiming new performance;
 old frozen trajectories and calibration results must not be relabeled or reused

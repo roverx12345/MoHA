@@ -36,10 +36,9 @@ def observe(index=0):
 
 
 class AuditContractTests(unittest.TestCase):
-    def test_verification_requires_two_total_calls_and_is_one_catalog_coordinate(self):
+    def test_verification_is_extra_and_is_one_catalog_coordinate(self):
         from moha.catalog import catalog
-        with self.assertRaises(ValueError):
-            Harness(verification=True, max_steps=1)
+        self.assertEqual(Harness(verification=True, max_steps=1).max_steps, 1)
         self.assertEqual(Harness(max_steps=1).max_steps, 1)
         base = Harness()
         intervention = catalog()["planner.module.verification_basic"]
@@ -47,7 +46,7 @@ class AuditContractTests(unittest.TestCase):
         self.assertEqual(target.max_steps, base.max_steps)
         self.assertTrue(target.verification)
         self.assertEqual({k for k in target.to_dict() if target.to_dict()[k] != base.to_dict()[k]}, {"verification"})
-        self.assertIn("finalize", intervention.description)
+        self.assertIn("extra call", intervention.description)
 
     def test_focus_ids_cannot_hide_contrary_evidence_from_final_audit(self):
         records = [{"observation": {"observation_id": name, "facts": [{"fact": fact}],
@@ -107,7 +106,7 @@ class AuditContractTests(unittest.TestCase):
 
 @unittest.skipUnless(VIDEO_OS_AVAILABLE, "requires pinned Video OS")
 class VerificationGateTests(unittest.TestCase):
-    def test_candidate_at_seven_is_audited_at_eight_and_finalized_at_nine(self):
+    def test_candidate_at_seven_is_audited_extra_and_planner_continues(self):
         planner = Planner([observe(i*3) for i in range(6)] + [final("B"), audit("contradicted", "A"), final("A")])
         result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=16), sample("cal"), 0)
         self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
@@ -121,11 +120,12 @@ class VerificationGateTests(unittest.TestCase):
         fresh = json.loads(planner.calls[7]["messages"][1]["content"])
         self.assertEqual(fresh["candidate_answer"]["answer"], "B")
         last = planner.calls[-1]
-        self.assertEqual((last["tools"], last["tool_choice"]), ([], "auto"))
+        self.assertEqual(last["tool_choice"], "auto")
+        self.assertTrue(last["tools"])
         context = json.loads(last["messages"][-1]["content"])
-        self.assertEqual(context["remaining_planner_calls"], 1)
-        self.assertEqual(context["finalization"]["observations"], fresh["observations"])
-        self.assertEqual(context["finalization"]["verification"]["audit"]["best_supported_option"], "A")
+        self.assertEqual(context["remaining_planner_calls"], 8)
+        self.assertEqual(context["verification_advice"]["observations"], fresh["observations"])
+        self.assertEqual(context["verification_advice"]["verification"]["audit"]["best_supported_option"], "A")
         self.assertEqual(result.events[-1]["kind"], "terminal")
 
     def test_non_submitting_search_loop_gets_step_fifteen_audit_and_sixteen_final(self):
@@ -152,10 +152,11 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(result.usage["model_calls"], 3)
         self.assertEqual(result.usage["verification_calls"], 1)
         self.assertEqual(result.raw["verification_gate"]["trigger"], "planner_request")
-        self.assertNotIn("observe", [x[0] for x in service.calls])
+        self.assertIn("observe", [x[0] for x in service.calls])
         results = [e for e in result.events if e["kind"] == "tool_result"]
         self.assertEqual(len(results), 3)
-        self.assertTrue(all(e["result"]["isError"] for e in results[1:]))
+        self.assertFalse(results[1]["result"].get("isError", False))
+        self.assertTrue(results[2]["result"]["isError"])
         self.assertEqual(set(results[0]["result"]), {"audit", "audit_status"})
         self.assertIn("receipt", results[0]["audit"])
         feedback = next(m for m in planner.calls[-1]["messages"]
@@ -171,10 +172,10 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(result.raw["verification_gate"]["candidate_answer"]["status"], "abstained")
 
     def test_two_call_budget_starts_with_audit_without_gifting_a_planning_call(self):
-        planner = Planner([audit(), final()])
+        planner = Planner([observe(), audit(), final()])
         result = EpisodeRunner(Service(), planner).run(Harness(verification=True, max_steps=2), sample("cal"), 0)
-        self.assertEqual(result.usage["model_calls"], 2)
-        self.assertEqual(result.usage["planner_calls"], 1)
+        self.assertEqual(result.usage["model_calls"], 3)
+        self.assertEqual(result.usage["planner_calls"], 2)
         self.assertEqual(result.raw["verification_gate"]["step"], 1)
         self.assertEqual(result.status, "completed", result.raw)
 
@@ -186,20 +187,18 @@ class VerificationGateTests(unittest.TestCase):
                 self.assertEqual(result.status, "completed", result.raw)
                 self.assertEqual(result.usage["model_calls"], 3)
                 self.assertEqual(result.usage["verification_calls"], 1)
-                verification = json.loads(planner.calls[-1]["messages"][-1]["content"])["finalization"]["verification"]
+                verification = json.loads(planner.calls[-1]["messages"][-1]["content"])["verification_advice"]["verification"]
                 self.assertEqual(verification["audit_status"], "invalid")
                 self.assertIsNone(verification["audit"])
                 self.assertEqual(verification["diagnosis"], malformed)
 
-    def test_post_audit_mode_has_only_one_response_and_never_executes_tools(self):
-        for response in ({"role": "assistant", "content": "Still thinking."}, observe()):
-            with self.subTest(response=response):
-                service, planner = Service(), Planner([final(), audit(), response])
-                result = EpisodeRunner(service, planner).run(Harness(verification=True), sample("cal"), 0)
-                self.assertEqual((result.status, result.answer), ("invalid_final_answer", None), result.raw)
-                self.assertEqual(result.usage["model_calls"], 3)
-                self.assertNotIn("observe", [x[0] for x in service.calls])
-                self.assertEqual(planner.calls[-1]["tools"], [])
+    def test_post_audit_keeps_tools_until_the_last_planner_call(self):
+        service, planner = Service(), Planner([final(), audit(), observe(), final()])
+        result = EpisodeRunner(service, planner).run(Harness(verification=True, max_steps=3), sample("cal"), 0)
+        self.assertEqual((result.status, result.answer), ("completed", "A"), result.raw)
+        self.assertEqual(result.usage["model_calls"], 4)
+        self.assertIn("observe", [x[0] for x in service.calls])
+        self.assertEqual(planner.calls[-1]["tools"], [])
 
     def test_verification_final_does_not_invoke_an_extra_answer_model(self):
         class Extractor:
@@ -209,7 +208,7 @@ class VerificationGateTests(unittest.TestCase):
                 raise AssertionError("no extra compute after verification")
         extractor = Extractor()
         planner = Planner([final(), audit(), {"role": "assistant", "content": "The evidence is unclear."}])
-        result = EpisodeRunner(Service(), planner, extractor=extractor).run(Harness(verification=True), sample("cal"), 0)
+        result = EpisodeRunner(Service(), planner, extractor=extractor).run(Harness(verification=True, max_steps=2), sample("cal"), 0)
         self.assertEqual(extractor.calls, 0)
         self.assertEqual(result.usage["model_calls"], 3)
         self.assertEqual(result.raw["terminal_answer_status"], "invalid")
