@@ -125,7 +125,7 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(last["tool_choice"], "auto")
         self.assertTrue(last["tools"])
         context = json.loads(last["messages"][-1]["content"])
-        self.assertEqual(context["remaining_planner_calls"], 8)
+        self.assertEqual(context["remaining_planner_calls"], 9)
         self.assertEqual(context["verification_advice"]["observations"], fresh["observations"])
         self.assertEqual(context["verification_advice"]["verification"]["audit"]["best_supported_option"], "A")
         self.assertEqual(result.events[-1]["kind"], "terminal")

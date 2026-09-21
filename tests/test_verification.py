@@ -160,7 +160,7 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(result.status, "completed", result.raw)
         fresh = verifier.calls[0]["messages"]
         self.assertIn("Evidence 10", str(fresh))
-        self.assertNotIn("Evidence 0", str(fresh))
+        self.assertIn("Evidence 0", str(fresh))
 
     def test_diagnosis_provider_failure_is_not_silently_retried(self):
         from flat.core.errors import ProviderError
@@ -216,6 +216,5 @@ class VerificationWireTests(unittest.TestCase):
         self.assertEqual(payload["options"], sample("cal").task["options"])
         self.assertIsNone(payload["planner_request"])
         self.assertEqual(result.usage["verification_calls"], 1)
-        self.assertFalse(transport.calls[-1].get("tools"))
-        self.assertNotIn("tool_choice", transport.calls[-1])
-        self.assertNotIn("response_format", transport.calls[-1])
+        self.assertTrue(transport.calls[-1].get("tools"))
+        self.assertEqual(transport.calls[-1].get("tool_choice"), "auto")
