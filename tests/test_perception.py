@@ -23,6 +23,9 @@ class SamplingPolicyTests(unittest.TestCase):
             self.assertEqual(policy.sampling_request(0.01)["target_frames"], 1)
         self.assertEqual([ExecutionPolicy(target_fps=f).sampling_request(25)["target_frames"]
                           for f in (0.5, 1, 2)], [13, 25, 50])
+        self.assertEqual(ExecutionPolicy(target_fps=1).max_window_seconds, 128)
+        self.assertEqual(ExecutionPolicy(target_fps=2).max_window_seconds, 64)
+        self.assertIsNone(ExecutionPolicy(frames=64).max_window_seconds)
 
     def test_auto_retains_one_fps_and_fixed_primitives_remain_explicit(self):
         for duration in (0.2, 8, 25, 60, 300):

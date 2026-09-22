@@ -5,11 +5,12 @@ import copy
 from flat.agent.player import VideoPlayerRegistry, PlayerProtocolError, normalize_initial_omni_search_query
 from flat.agent.observer_registry import ObserverGoal
 from .models import Harness
+from .execution import FRAME_CAP
 from .observer import PolicyExecution, PolicyObserverRegistry
 from .records import observer_audit
 
 
-PLANNER_TOOL_POLICY = "moha_scoped_search_instructions_v4"
+PLANNER_TOOL_POLICY = "moha_scoped_search_instructions_v5"
 MIN_OBSERVE_WINDOW_SECONDS = 0.5
 
 
@@ -40,6 +41,23 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
 
     def schemas(self):
         schemas = super().schemas()
+        default_policy = self.moha_harness.execution_for_goal("default")
+        max_window = default_policy.max_window_seconds
+        if max_window is None:
+            window_limit = (
+                "The active profile uses a fixed frame count, so there is no "
+                "rate-derived maximum window; the host still enforces the media "
+                "and episode budgets."
+            )
+        else:
+            window_limit = (
+                f"The active profile samples at {default_policy.sampling_rate:g} FPS "
+                f"with a hard {FRAME_CAP}-frame cap, so one observe window may span "
+                f"at most {max_window:g} seconds. If you request a longer interval, "
+                "the host returns only the leading allowed source-time interval and "
+                "explicitly reports the returned window; use another observe for "
+                "the remainder."
+            )
         for item in schemas:
             function = item["function"]
             if function["name"] == "video_player_search":
@@ -66,7 +84,7 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
                     "start and end directly; search is optional and its candidate windows "
                     "may be expanded to include preceding or following events. The harness "
                     "controls frame rate, resolution, sampling and observer routing. Require "
-                    "0 <= start_seconds < end_seconds <= video duration."
+                    "0 <= start_seconds < end_seconds <= video duration. " + window_limit
                 )
                 parameters = function["parameters"]
                 goal = parameters["properties"]["goal"]
@@ -76,7 +94,8 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
                     "end_seconds": {"type": "number", "minimum": 0,
                                     "description": (
                                         "Window end in source seconds, at most the video duration. "
-                                        "The observation window must be at least 0.5 seconds long."
+                                        "The observation window must be at least 0.5 seconds long. "
+                                        + window_limit
                                     )},
                     "instruction": {**goal["properties"]["target"], "description":
                         "A direct instruction or question for the observer: specify what to inspect "
@@ -133,19 +152,47 @@ class WindowPlayerRegistry(VideoPlayerRegistry):
             message = str(exc).replace("goal.target", "instruction").replace("goal.reference", "reference")
             message = message.replace("observer goal type", "evidence_type").replace("relation goals", "relation evidence")
             raise PlayerProtocolError(message) from exc
-        # Preserve the exact valid support chosen by the planner. The explicit
-        # minimum above rejects too-short media requests instead of silently
-        # widening or shifting their evidentiary support.
-        self.state.window_start_seconds, self.state.window_end_seconds = float(start), float(end)
+        execution = self._execution_for_goal(goal)
+        max_window = execution.policy.max_window_seconds
+        returned_end = end
+        adjustment = None
+        if max_window is not None and end - start > max_window + 1e-9:
+            returned_end = min(end, start + max_window)
+            adjustment = {
+                "policy": "rate_frame_cap_window_v1",
+                "requested_window": [start, end],
+                "returned_window": [start, returned_end],
+                "max_window_seconds": max_window,
+                "target_fps": execution.policy.sampling_rate,
+                "frame_cap": FRAME_CAP,
+                "message": (
+                    f"The requested observe window [{start:g}, {end:g}] seconds "
+                    f"exceeds the active {execution.policy.sampling_rate:g} FPS / "
+                    f"{FRAME_CAP}-frame limit. Only [{start:g}, {returned_end:g}] "
+                    "seconds was observed; request another window for the remainder."
+                ),
+            }
+        # Preserve the effective source support. Overlong requests are clipped
+        # to the leading rate/cap-compatible interval and reported explicitly.
+        self.state.window_start_seconds, self.state.window_end_seconds = float(start), float(returned_end)
         self.state.mode, self.state.active_candidate_id = "local", None
-        window = [float(start), float(end)]
+        window = [float(start), float(returned_end)]
         if not self.state.visited_windows or self.state.visited_windows[-1] != window:
             self.state.visited_windows.append(window)
         self.state.note_non_search_progress()
         self.state.set_focus(None, modality="visual")
         self.state.record_action("observe")
         try:
-            return self._observe_initial_omni(name, "", goal.to_dict(include_coverage=False))
+            result = self._observe_initial_omni(name, "", goal.to_dict(include_coverage=False))
+            if adjustment is not None:
+                result["window_adjustment"] = copy.deepcopy(adjustment)
+                result["message"] = adjustment["message"]
+                receipt = result.get("observer_execution_receipt")
+                if isinstance(receipt, dict):
+                    receipt["requested_window"] = copy.deepcopy(adjustment["requested_window"])
+                    receipt["window_adjustment"] = copy.deepcopy(adjustment)
+                result["player_state"] = self.snapshot()
+            return result
         except Exception as exc:
             receipt = getattr(exc, "observer_execution_receipt", None)
             if isinstance(receipt, dict):

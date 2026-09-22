@@ -39,6 +39,13 @@ class ExecutionPolicy:
         # Fixed-frame primitives remain available for explicit renderer work.
         return (self.target_fps if self.target_fps is not None else 1.0) if self.frames == "auto" else None
 
+    @property
+    def max_window_seconds(self):
+        """Maximum source-time window that can honor a rate-based frame cap."""
+        if self.frames != "auto":
+            return None
+        return FRAME_CAP / self.sampling_rate
+
     def to_dict(self):
         values = asdict(self)
         if self.target_fps is None:

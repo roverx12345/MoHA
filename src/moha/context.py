@@ -39,7 +39,7 @@ def tool_context(result, *, keep_state=True):
                             "error", "message", "recoverable", "candidates", "audit", "audit_status",
                             "result_memory", "working_memory", "working_note", "no_novelty",
                             "restored_after_eviction", "memory_read_masked", "result_records",
-                            "working_notes", "source_ids", "ledger"))
+                            "working_notes", "source_ids", "ledger", "window_adjustment"))
     if value.get("tool") in ("video_player_search", "video_player_observe"):
         value["tool"] = value["tool"].removeprefix("video_player_")
     # Parsed audit already contains its diagnosis. Invalid raw output remains

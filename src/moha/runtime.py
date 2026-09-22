@@ -12,10 +12,11 @@ from .verification import (VERIFICATION_POLICY, VERIFICATION_CAPABILITY, diagnos
 from .answers import (ANSWER_PARSING_POLICY, terminal_json_answer,
                       terminal_tool_call_answer)
 from .failures import ExecutionFailure, classify_failure
+from .execution import FRAME_CAP
 
 
 PLANNER_COMPLETION_POLICY = "moha_single_pass_verification_v8"
-PLANNER_PROMPT_POLICY = "moha_enabled_module_prompt_v2"
+PLANNER_PROMPT_POLICY = "moha_enabled_module_prompt_v3"
 
 
 PLANNER_PROMPT = """Answer the video question using search and observe.
@@ -59,6 +60,16 @@ FINAL_ANSWER_PROMPT = """Resolve uncertainty using your judgment within the rema
 def planner_prompt(harness: Harness):
     """Describe only capabilities enabled for this episode."""
     parts = [PLANNER_PROMPT]
+    execution = harness.execution_for_goal("default")
+    max_window = execution.max_window_seconds
+    if max_window is not None:
+        parts.append(
+            f"The active observer profile samples at {execution.sampling_rate:g} FPS "
+            f"with a hard {FRAME_CAP}-frame cap, so each observe window can cover at most "
+            f"{max_window:g} seconds. If you need a longer interval, request consecutive "
+            "windows. The host will report the actual returned source-time window if it "
+            "clips an overlong request."
+        )
     if harness.overview:
         parts.append(OVERVIEW_PROMPT)
     if harness.memory:
