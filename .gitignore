@@ -9,4 +9,9 @@ dist/
 .env.*
 *.local.json
 *.key
-
+work/
+outputs/
+runs/
+.private/
+*.log
+*.pid

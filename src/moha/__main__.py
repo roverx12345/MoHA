@@ -95,7 +95,7 @@ def main(argv=None):
         else:
             if any(item["identity"][key]["dirty"] for item in prepared.values()
                    for key in ("source", "runtime")):
-                raise ValueError("AGENTS.md requires clean committed source and runtime worktrees before inference")
+                raise ValueError("source and runtime worktrees must be clean and committed before inference")
             roots = {repo, *(Path(item["config"]["runtime"]["root"]).resolve()
                              for item in prepared.values())}
             if any(args.output.resolve().is_relative_to(root) for root in roots):
@@ -169,7 +169,7 @@ def main(argv=None):
                       "note": "Configuration, imports, credential availability and video hashes checked; endpoint health is not measured."}
         else:
             if prepared["identity"]["source"]["dirty"] or prepared["identity"]["runtime"]["dirty"]:
-                raise ValueError("AGENTS.md requires a clean committed worktree before evaluation/inference; doctor and offline tests remain available")
+                raise ValueError("source and runtime worktrees must be clean and committed before evaluation/inference; doctor and offline tests remain available")
             if any(args.output.resolve().is_relative_to(root) for root in (
                     repo, Path(prepared["config"]["runtime"]["root"]).resolve())):
                 raise ValueError("run output must be outside the source worktree")

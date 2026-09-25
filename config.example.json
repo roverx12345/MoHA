@@ -2,9 +2,9 @@
   "schema": "moha_config_v1",
   "diagnosis_workers": 8,
   "perception_calibration": true,
-  "media_root": "/home/jianghan/.cache/huggingface/hub/datasets--TencentARC--Video-Holmes/snapshots/02fcfc696a7e101bb0e3b8d620280bda717db3d0/video",
-  "calibration_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/calibration_input_manifest.json",
-  "validation_manifest": "/home/jianghan/video_os_runs/video_holmes_grouped_split_20260902_q64div_r01/validation_input_manifest.json",
+  "media_root": "/path/to/video/root",
+  "calibration_manifest": "/path/to/calibration_input_manifest.json",
+  "validation_manifest": "/path/to/validation_input_manifest.json",
   "initial": {
     "max_steps": 16,
     "history_turns": 8,
@@ -45,8 +45,8 @@
   "models": {
     "planner": {
       "spec": {
-        "model": "gpt-5.5",
-        "base_url": "https://216.36.108.181",
+        "model": "planner-model",
+        "base_url": "https://planner.example.invalid/v1",
         "max_completion_tokens": 2048,
         "timeout_seconds": 900,
         "retries": 0
@@ -57,16 +57,15 @@
     },
     "judge": {
       "spec": {
-        "model": "claude-opus-4-8",
-        "base_url": "https://zgc.apihy.com",
+        "model": "judge-model",
+        "base_url": "https://judge.example.invalid/v1",
         "response_format_mode": "json_text",
         "max_completion_tokens": 4096,
         "timeout_seconds": 900,
         "retries": 0
       },
       "key": {
-        "file": "/home/jianghan/.config/vidreasoning-secrets/apihy_claude_judge_20260902.json",
-        "field": "claude"
+        "env": "MOHA_JUDGE_API_KEY"
       }
     }
   },
@@ -86,8 +85,8 @@
   ],
   "image": {
     "spec": {
-      "model": "Qwen/Qwen3.5-4B",
-      "base_url": "https://api2.aigcbest.top/v1",
+      "model": "ocr-model",
+      "base_url": "https://ocr.example.invalid/v1",
       "timeout_seconds": 300,
       "retries": 0,
       "max_completion_tokens": 3072,
@@ -111,7 +110,7 @@
   },
   "retrieval_extension": false,
   "runtime": {
-    "root": "/home/jianghan/MoHA/flat",
-    "commit": "87a5071131d76c5cba49bbd183b23397fef8c550"
+    "root": "/path/to/flat",
+    "commit": "REPLACE_WITH_THE_PINNED_FLAT_COMMIT"
   }
 }
