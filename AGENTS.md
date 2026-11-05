@@ -83,11 +83,11 @@
 - Commit coherent changes before real model calls. Both this checkout and the
   pinned runtime must be clean. Record source/runtime commits, input/config hashes,
   provider identities, command, environment, and output location for every run.
-- Store actual run configs, credentials, logs, checkpoints, and bulk run outputs
-  outside this repository. User-requested `calibrated/` holds only checked,
-  credential-free planner/observer profiles exported from completed calibrations;
-  keep one current profile per pair and its provenance. Never label an unfinished
-  run or a template as calibrated. Use Git history for older profiles.
+- Store actual run configs, credentials, logs, checkpoints, exported calibration
+  profiles, and bulk run outputs outside this repository. The user currently wants
+  a source-only release without bundled experimental profiles. Keep the export
+  command available for external outputs. Never label an unfinished run or a
+  template as calibrated. Historical published profiles remain in Git history.
 - Never delete completed experiments to make the source look clean.
 - Existing runs use their frozen source; do not edit their code or artifacts in place.
 - Keep observer output recovery in `observer.py`: unchanged first request, one
@@ -137,5 +137,5 @@
   window; never clip that window according to FPS. The final grid is on by default;
   `perception_calibration=false` is an explicit stage ablation. `condition=static-all`
   enables the five components and still runs the final grid, while `condition=initial`
-  freezes H0 without adaptation. Keep historical profiles unchanged and identify
-  differences from the paper instead of relabeling old results.
+  freezes H0 without adaptation. Preserve external historical profiles and their
+  provenance instead of relabeling old results.

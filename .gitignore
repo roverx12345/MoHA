@@ -9,4 +9,5 @@ dist/
 .env.*
 *.local.json
 *.key
+calibrated/
 
