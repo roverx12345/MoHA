@@ -112,15 +112,15 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(set(parameters["required"]), set(parameters["properties"]) - {"reference"})
         self.assertFalse(parameters["additionalProperties"])
 
-    def test_observe_schema_describes_rate_derived_window_cap(self):
+    def test_observe_schema_preserves_full_window_under_the_frame_cap(self):
         registry, _ = self.registry()
         function = next(s["function"] for s in registry.schemas() if s["function"]["name"] == "observe")
         self.assertIn("1 FPS", function["description"])
         self.assertIn("128-frame cap", function["description"])
-        self.assertIn("128 seconds", function["description"])
-        self.assertIn("128 seconds", function["parameters"]["properties"]["end_seconds"]["description"])
+        self.assertIn("complete selected source-time window is preserved", function["description"])
+        self.assertNotIn("128 seconds", function["description"])
 
-    def test_overlong_observe_is_clipped_and_reported_to_planner(self):
+    def test_long_observe_caps_frames_without_changing_source_time_support(self):
         class LongService(Service):
             def begin_episode(self, asset_id):
                 started = super().begin_episode(asset_id)
@@ -139,17 +139,16 @@ class WindowTests(unittest.TestCase):
         episode = EpisodeRunner(service, planner).run(Harness(), sample("unit"), 0)
         self.assertEqual(episode.status, "completed", episode.raw)
         wire = service.calls[-1][1]
-        self.assertEqual((wire["start_seconds"], wire["end_seconds"]), (10, 138))
+        self.assertEqual((wire["start_seconds"], wire["end_seconds"]), (10, 200))
         receipt = receipts(episode.events)[0]
-        self.assertEqual(receipt["window"], [10, 138])
-        self.assertEqual(receipt["requested_window"], [10, 200])
-        self.assertEqual(receipt["window_adjustment"]["max_window_seconds"], 128)
+        self.assertEqual(receipt["window"], [10, 200])
+        self.assertEqual(receipt["realized_execution"]["target_frames"], 128)
+        self.assertTrue(receipt["realized_execution"]["frame_cap_hit"])
         tool_result = next(e["result"] for e in episode.events
                            if e["kind"] == "tool_result" and e["tool"] == "observe")
-        self.assertIn("Only [10, 138] seconds was observed", tool_result["message"])
-        self.assertEqual(tool_result["window_adjustment"]["returned_window"], [10, 138])
+        self.assertNotIn("window_adjustment", tool_result)
         sent = json.loads(planner.calls[-1]["messages"][-2]["content"])
-        self.assertIn("Only [10, 138] seconds was observed", sent["message"])
+        self.assertEqual(sent["observation_context"]["window"], [10, 200])
 
     def test_search_candidate_can_be_expanded_or_left_for_another_region(self):
         class ShortSearch(Service):

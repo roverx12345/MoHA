@@ -73,7 +73,7 @@ class AuditContractTests(unittest.TestCase):
         self.assertEqual(target.max_steps, base.max_steps)
         self.assertTrue(target.verification)
         self.assertEqual({k for k in target.to_dict() if target.to_dict()[k] != base.to_dict()[k]}, {"verification"})
-        self.assertIn("extra call", intervention.description)
+        self.assertIn("extra session", intervention.description)
 
     def test_focus_ids_cannot_hide_contrary_evidence_from_final_audit(self):
         records = [{"observation": {"observation_id": name, "facts": [{"fact": fact}],

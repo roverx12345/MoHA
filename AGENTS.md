@@ -10,6 +10,13 @@
 - Preserve the paper's shared H0, catalog-constrained single-coordinate proposals,
   calibration/validation separation, fixed-support observer probes, and validation
   gate. Diagnoses are hypotheses, not fixed intervention-routing rules.
+  Structural updates are exactly overview, memory, verification, OCR and ASR.
+  Execution alternatives are probes only. Stop immediately on no supported candidate
+  or no validation acceptance within the per-round limit. Rejection applies only to
+  the current structure; failure-profile statistics do not control selection or stopping.
+  Use strict raw accuracy gain above 0.02, two repeats and at most six rounds/two
+  candidates per round by default. Invalid/unresolved diagnoses contribute zero votes;
+  infrastructure failures remain errors. Cost and confidence are descriptive only.
 - Keep two Flat tools and verify_fresh only when verification is enabled.
   The user authorized replacing callable memory tools with automatic persistent
   evidence injection on 2026-09-12. Do not expose memory_read or memory_note.
@@ -52,15 +59,15 @@
   bounded-history path. Existing tool-memory runs retain their frozen implementation.
 - Verification is a single-pass outcome audit. Run at most one audit including manual
   verify_fresh; the automatic trigger is candidate pre-submit only, and the extra verifier
-  call is outside the planner step budget. Do not create a budget-floor audit when no
+  session is outside the planner step budget. Do not create a budget-floor audit when no
   candidate exists. After automatic candidate submission, record the audit and finish the
   episode after one deterministic adjudication; keep a supported candidate, and replace a
   contradicted or insufficient candidate only when the audit names a supported alternative.
   Do not inject advice or start refinement. A manual
   audit may return its ordinary tool result so the planner can continue its own flow, but it
-  never requests corrective perception or rewrites an answer. Audit every complete option,
+  may obtain at most one targeted observation before the final audit. Audit every complete option,
   the candidate, visible original observations with their full source context and caveats,
-  and explicit unverified planner hypotheses in a fresh text-only context. Verification must
+  and explicit unverified planner hypotheses in a fresh context. Verification must
   read only observations present in the actual projected planner input and never access the
   memory archive directly; memory composes with it only through ordinary context injection.
   No working-note ledger, prior dialogue, screenshots or reference answer. Focus IDs must not
@@ -115,14 +122,20 @@
   Probe one fixed request with one fresh control and at most six distinct
   one-coordinate alternatives; preflight media no-ops without model calls and
   require the actual receipt to verify a change before crediting a rescue.
-- With `perception_calibration=true`, structural adaptation keeps H0 visual
+- Structural adaptation always keeps H0 visual
   execution and changes only support modules/specialists. Specialist attribution
-  retains its fixed-support execution probes; other execution preferences are
-  deferred to the final validation stage rather than gated by Judge labels.
+  retains its fixed-support execution probes for observer diagnoses; temporary
+  execution preferences never become structural updates.
   Freeze structure, then evaluate 0.5/1/2 FPS by 0.5/0.75/1.0 source edge ratios,
   balanced priority and shared f_view=128. Use the same complete validation samples
-  and repeats for all nine policies, a separate final-stage episode cache, measured
-  utility and deterministic ties. Preserve the structural promotion gate; final
+  and repeats for all nine policies, a separate final-stage episode cache, maximum
+  raw accuracy and deterministic ties. Preserve the structural promotion gate; final
   selection is a validation argmax. Never export a partial sweep as calibrated.
   Keep actual window duration, target and realized frames/FPS/resolution and cap
   truncation in receipts. Fixed planner settings do not imply fixed trajectories.
+  A frame cap reduces sampling density across the full planner-selected source-time
+  window; never clip that window according to FPS. The final grid is on by default;
+  `perception_calibration=false` is an explicit stage ablation. `condition=static-all`
+  enables the five components and still runs the final grid, while `condition=initial`
+  freezes H0 without adaptation. Keep historical profiles unchanged and identify
+  differences from the paper instead of relabeling old results.

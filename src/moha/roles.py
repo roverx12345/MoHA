@@ -73,7 +73,8 @@ Do not invent candidates or parameters. Only held-out validation can promote a
 candidate. verification_basic performs one outcome audit when a candidate is submitted; the
 audit is an extra call outside the planner step budget and may replace a contradicted or
 insufficient candidate with its supported option. A manual verify_fresh call may consume the
-same allowance early. It cannot obtain new evidence or start a refinement loop. Persistent evidence
+same allowance early. The verifier may obtain one targeted observation before its final audit,
+but cannot start a refinement loop. Persistent evidence
 memory restores history-evicted observations automatically within the shared context budget and
 expands bounded history to the planner step limit.
 It supplies no memory tools or planner notes and never triggers verification by itself.
@@ -166,7 +167,7 @@ class StructuredRole:
                 request = {"original_input": payload, "previous_output": value,
                            "format_error": str(exc),
                            "repair_instruction": "Correct the format using the same exact schema. Preserve substantive uncertainty; do not force a causal label."}
-        return {"status": "error", "role": name, "attempts": attempts}
+        return {"status": "invalid", "role": name, "attempts": attempts}
 
 
 class Judge(StructuredRole):

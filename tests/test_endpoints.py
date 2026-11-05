@@ -83,6 +83,7 @@ class EndpointTests(unittest.TestCase):
         cfg.pop("image")
         cfg.pop("asr")
         cfg.pop("diagnosis_workers")  # Future configs default to eight workers.
+        cfg.pop("perception_calibration")  # The full two-stage method is the default.
         cfg["observer"]["key"] = {"local": True}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"
@@ -92,6 +93,9 @@ class EndpointTests(unittest.TestCase):
                  patch("moha.bridge.load_split", side_effect=splits), \
                  patch("moha.bridge.source_identity", return_value={}), patch("moha.bridge._snapshot", return_value={}):
                 prepared = prepare(path, Path(tmp))
+            self.assertTrue(prepared["perception_calibration"])
+            self.assertEqual(set(prepared["allowed_ids"]), {"planner.module.overview",
+                             "planner.module.memory_basic", "planner.module.verification_basic"})
             adapters = prepared["clients"]["judges"] + prepared["clients"]["probe_judges"]
             self.assertEqual(len(prepared["clients"]["judges"]), 8)
             self.assertEqual(len(prepared["clients"]["probe_judges"]), 2)

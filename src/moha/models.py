@@ -154,8 +154,8 @@ class Episode:
 
 @dataclass(frozen=True)
 class ValidationPolicy:
-    repeats: int = 1
-    min_gain: float = 0.0
+    repeats: int = 2
+    min_gain: float = 0.02
     confidence: float = 0.95
     bootstrap_samples: int = 2000
     cost_metric: str = "video_tokens"
@@ -185,3 +185,8 @@ class ValidationPolicy:
         for key in ("require_each_repeat_nonnegative", "require_positive_interval"):
             if not isinstance(getattr(self, key), bool):
                 raise ValueError(f"{key} must be boolean")
+        # Accept neutral fields from old configuration files, but do not silently
+        # substitute a cost/confidence objective for the paper's accuracy gate.
+        if (self.cost_penalty != 0 or self.max_cost_ratio is not None
+                or self.require_positive_interval or self.require_each_repeat_nonnegative):
+            raise ValueError("paper validation uses accuracy only; cost/confidence gates are unsupported")

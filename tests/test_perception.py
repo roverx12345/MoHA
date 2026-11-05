@@ -23,9 +23,10 @@ class SamplingPolicyTests(unittest.TestCase):
             self.assertEqual(policy.sampling_request(0.01)["target_frames"], 1)
         self.assertEqual([ExecutionPolicy(target_fps=f).sampling_request(25)["target_frames"]
                           for f in (0.5, 1, 2)], [13, 25, 50])
-        self.assertEqual(ExecutionPolicy(target_fps=1).max_window_seconds, 128)
-        self.assertEqual(ExecutionPolicy(target_fps=2).max_window_seconds, 64)
-        self.assertIsNone(ExecutionPolicy(frames=64).max_window_seconds)
+        for rate in (0.5, 1, 2):
+            request = ExecutionPolicy(target_fps=rate).sampling_request(300)
+            self.assertEqual(request["window_duration"], 300)
+            self.assertEqual(request["target_frames"], 128)
 
     def test_auto_retains_one_fps_and_fixed_primitives_remain_explicit(self):
         for duration in (0.2, 8, 25, 60, 300):
@@ -64,14 +65,14 @@ class SamplingPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy_grid(Harness.from_dict({"execution": {"default": {"frames": 64}}}))
 
-    def test_validation_utility_ties_and_cost_constraints(self):
+    def test_validation_accuracy_wins_and_cost_breaks_only_accuracy_ties(self):
         rows = [{"id": DEFAULT_POLICY, "accuracy": 0.5, "mean_cost": 100},
                 {"id": "a", "accuracy": 0.5, "mean_cost": 50},
                 {"id": "b", "accuracy": 0.75, "mean_cost": 200}]
         self.assertEqual(select_policy(rows[:2], ValidationPolicy())["id"], DEFAULT_POLICY)
         self.assertEqual(select_policy(rows, ValidationPolicy())["id"], "b")
-        self.assertEqual(select_policy(rows, ValidationPolicy(max_cost_ratio=1))["id"], DEFAULT_POLICY)
-        self.assertEqual(select_policy(rows, ValidationPolicy(cost_penalty=1, cost_scale=100))["id"], "a")
+        self.assertEqual(select_policy([rows[0], {**rows[2], "mean_cost": 10**9}], ValidationPolicy())["id"], "b")
+        self.assertEqual(select_policy([rows[1], {**rows[2], "accuracy": 0.5}], ValidationPolicy())["id"], "a")
         with self.assertRaises(ValueError):
             select_policy([rows[0], {**rows[1], "mean_cost": None}], ValidationPolicy())
 
@@ -114,7 +115,7 @@ class PerceptionLoopTests(unittest.TestCase):
             final = result["perception_calibration"]
             self.assertEqual(final["selected_policy_id"], "fps2_scale0.75")
             self.assertEqual(len(final["rows"]), 9)
-            self.assertEqual({r["episodes"] for r in final["rows"]}, {3})
+            self.assertEqual({r["episodes"] for r in final["rows"]}, {6})
             self.assertEqual(validate_result(final, Harness(overview=True), loop.validation_policy).id,
                              store.read("frozen_harness.json")["harness_id"])
             # The default is reacquired for final selection, rather than mixing
@@ -177,23 +178,65 @@ class PerceptionLoopTests(unittest.TestCase):
             self.assertTrue(any(c.endswith(".target_fps") for c in resolver.seen))
             self.assertEqual(judge.seen["status"], "no_rescue")
 
-    def test_deferred_sampling_diagnosis_does_not_enter_completed_probe_recommendation(self):
+    def test_default_catalog_has_exactly_five_components_and_never_promotes_execution(self):
+        with RunStore(self.root, {}) as store:
+            loop = self.loop(store, RateRunner())
+            self.assertEqual({c.coordinate for c in loop.catalog.values()},
+                             {"overview", "memory", "verification", "specialists"})
+            self.assertEqual(len(loop.catalog), 5)
+        for candidate in ("planner.module.retrieval_basic", "observer.execution.text.target_fps.2.0"):
+            with RunStore(Path(self.tmp.name) / candidate, {}) as store, self.assertRaisesRegex(ValueError, "structural updates"):
+                self.loop(store, RateRunner(), allowed_ids=[candidate])
+
+    def test_static_all_calibrates_nine_policies_without_structural_search(self):
+        class NoJudge:
+            def diagnose(self, *args):
+                raise AssertionError("Static-All must not diagnose or select components")
+        runner = RateRunner()
+        with RunStore(self.root, {}) as store:
+            loop = Calibrator(runners=[runner], judges=[NoJudge()], store=store,
+                calibration=[sample("cal")], validation=[sample("val0")], condition="static-all",
+                validation_policy=ValidationPolicy(bootstrap_samples=20))
+            result = loop.run()
+            structure = Harness.from_dict(result["structural_harness"])
+            self.assertTrue(all((structure.overview, structure.memory, structure.verification)))
+            self.assertEqual(set(structure.specialists), {"ocr", "asr"})
+            self.assertFalse(structure.retrieval_guard)
+            self.assertEqual(result["history"], [])
+            self.assertEqual(len(result["perception_calibration"]["rows"]), 9)
+            self.assertEqual(len(runner.calls), 18)
+            self.assertFalse(any(s == "cal" for s, _, _ in runner.calls))
+
+    def test_initial_baseline_freezes_h0_without_calibration(self):
+        runner = RateRunner()
+        with RunStore(self.root, {}) as store:
+            result = Calibrator(runners=[runner], judges=[DemoJudge()], store=store,
+                calibration=[sample("cal")], validation=[sample("val")], condition="initial").run()
+            self.assertEqual(Harness.from_dict(result["harness"]), Harness())
+            self.assertNotIn("perception_calibration", result)
+            self.assertEqual(runner.calls, [])
+
+    def test_observer_without_specialist_attribution_still_gets_probe_then_recommendation(self):
         class Judge(DemoJudge):
             def diagnose(self, *args):
                 return {"status": "valid", "failure": "observer", "failed_capability": None,
                         "candidate_id": None, "evidence_steps": [1]}
-            def recommend(self, *args):
-                raise AssertionError("deferred sampling has no completed counterfactual probe")
+            def recommend(self, payload, diagnosis, available):
+                self.asserted_resolution = diagnosis["observer_resolution"]["status"]
+                return {"status": "valid", "candidate_id": None, "proposal_reason": "No structural proposal"}
+        class Resolver:
+            def resolve(self, *args):
+                return {"status": "inconclusive"}
         with RunStore(self.root, {}) as store:
-            loop = self.loop(store, RateRunner())
+            loop = self.loop(store, RateRunner(), resolvers=[Resolver()])
             loop.judges = (Judge(),)
             episodes = loop.batch(Harness(), loop.calibration, 0, "calibration")
             result, = loop.diagnose(Harness(), episodes, list(loop.catalog.values()))
             self.assertEqual(result["status"], "valid")
-            self.assertEqual(result["observer_resolution"]["status"], "deferred")
+            self.assertEqual(result["observer_resolution"]["status"], "inconclusive")
             self.assertIsNone(result["candidate_id"])
             self.assertTrue(result["proposal_reason"])
-            self.assertNotIn("observer_proposal", result)
+            self.assertIn("observer_proposal", result)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from .execution import FRAME_CAP
 
 
 PLANNER_COMPLETION_POLICY = "moha_single_pass_verification_v8"
-PLANNER_PROMPT_POLICY = "moha_enabled_module_prompt_v3"
+PLANNER_PROMPT_POLICY = "moha_full_window_module_prompt_v4"
 
 
 PLANNER_PROMPT = """Answer the video question using search and observe.
@@ -43,10 +43,10 @@ Restoration uses the shared context allowance. A capacity notice means some old
 observations could not be restored; their absence does not establish absence in the video."""
 
 VERIFICATION_PROMPT = """Verification is a single-pass outcome audit.
-The harness makes one extra verifier call outside the planner step budget when you submit a
+The harness starts one extra verifier session outside the planner step budget when you submit a
 candidate answer. The audit compares every option with the original observations and records
-support, contradiction, uncertainty and evidence IDs. It is diagnostic only: it does not revise
-request more perception or start a planning/refinement loop. The verifier may make one targeted
+support, contradiction, uncertainty and evidence IDs. It does not start a planning/refinement
+loop. The verifier may make one targeted
 observation when the current evidence is insufficient, then it must emit one final audit. If the
 audit identifies a supported alternative while the candidate is contradicted or insufficient, the
 harness may use that option as the final answer. If no supported replacement exists, preserve the
@@ -61,14 +61,11 @@ def planner_prompt(harness: Harness):
     """Describe only capabilities enabled for this episode."""
     parts = [PLANNER_PROMPT]
     execution = harness.execution_for_goal("default")
-    max_window = execution.max_window_seconds
-    if max_window is not None:
+    if execution.sampling_rate is not None:
         parts.append(
             f"The active observer profile samples at {execution.sampling_rate:g} FPS "
-            f"with a hard {FRAME_CAP}-frame cap, so each observe window can cover at most "
-            f"{max_window:g} seconds. If you need a longer interval, request consecutive "
-            "windows. The host will report the actual returned source-time window if it "
-            "clips an overlong request."
+            f"with a hard {FRAME_CAP}-frame cap. The host preserves your complete selected "
+            "source-time window and may reduce sampling density to fit sensory budgets."
         )
     if harness.overview:
         parts.append(OVERVIEW_PROMPT)

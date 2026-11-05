@@ -11,7 +11,7 @@ import sys
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit
-from .catalog import catalog
+from .catalog import structural_catalog
 from .loop import Calibrator, SearchPolicy
 from .models import Harness, Sample, ValidationPolicy, canonical, check_splits, digest, positive_int
 from .probes import ObserverResolver, ProbeRunner
@@ -232,7 +232,7 @@ def lane_clients(models, observer_url, budget, planner_max_inflight_per_endpoint
 def prepare(config_path, repo):
     config = read_object(config_path)
     required = {"schema", "runtime", "media_root", "calibration_manifest", "validation_manifest", "budget", "models", "observer"}
-    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers", "perception_calibration", "planner_max_inflight_per_endpoint"}
+    allowed = required | {"initial", "search", "validation", "specialists", "image", "asr", "retrieval_extension", "diagnosis_workers", "perception_calibration", "planner_max_inflight_per_endpoint", "condition"}
     if required - set(config) or set(config) - allowed or config["schema"] != "moha_config_v1":
         raise ValueError("unknown or missing MOHA configuration fields/schema")
     judge_spec = config["models"].get("judge", {}).get("spec", {})
@@ -257,14 +257,22 @@ def prepare(config_path, repo):
         raise ValueError("calibration must start from shared Initial-Omni H0")
     search, validation = SearchPolicy(**config.get("search", {})), ValidationPolicy(**config.get("validation", {}))
     budget = BudgetContract(**config["budget"])
-    perception_calibration = config.get("perception_calibration", False)
+    perception_calibration = config.get("perception_calibration", True)
     if type(perception_calibration) is not bool:
         raise ValueError("perception_calibration must be boolean")
+    condition = config.get("condition", "moha")
+    if condition not in {"moha", "initial", "static-all"}:
+        raise ValueError("condition must be moha, initial or static-all")
+    if condition == "static-all" and not perception_calibration:
+        raise ValueError("Static-All requires observer configuration calibration")
+    perception_calibration = perception_calibration and condition != "initial"
     if perception_calibration and budget.f_view != FRAME_CAP:
         raise ValueError("final perception calibration requires the shared f_view=128 frame cap")
     specialists = config.get("specialists", [])
     if not isinstance(specialists, list) or len(set(specialists)) != len(specialists) or set(specialists) - {"ocr", "asr"}:
         raise ValueError("specialists must list supported, unique capabilities")
+    if condition == "static-all" and set(specialists) != {"ocr", "asr"}:
+        raise ValueError("Static-All requires both configured OCR and ASR specialists")
     if "ocr" in specialists and "image" not in config:
         raise ValueError("OCR requires an explicitly configured image backend")
     if "asr" in specialists and "asr" not in config:
@@ -276,6 +284,8 @@ def prepare(config_path, repo):
         raise ValueError("this MOHA implementation supports the deployed Qwen Omni services")
     if type(config.get("retrieval_extension", False)) is not bool:
         raise ValueError("retrieval_extension must be boolean")
+    if config.get("retrieval_extension", False):
+        raise ValueError("retrieval_extension is outside the paper's structural catalog")
     models = config["models"]
     if not {"planner", "judge"} <= set(models) or set(models) - {"planner", "judge", "extractor", "verifier"}:
         raise ValueError("models require planner/judge and optionally verifier/extractor; selection is deterministic")
@@ -301,11 +311,10 @@ def prepare(config_path, repo):
     runtime = _snapshot(runtime_root, ("src/flat",), ("pyproject.toml", "AGENTS.md", "README.md"))
     identity = {"implementation": "moha", "config": config, "source": source, "runtime": runtime,
                 "input_hashes": {"calibration": digest(left), "validation": digest(right)}}
-    ids = [k for k, item in catalog().items()
-           if (item.coordinate != "specialists" or item.value in specialists)
-           and not (perception_calibration and item.coordinate.startswith("execution."))
-           and (item.coordinate != "retrieval_guard" or config.get("retrieval_extension", False))]
+    ids = [k for k, item in structural_catalog().items()
+           if item.coordinate != "specialists" or item.value in specialists]
     return {"config": config, "identity": identity, "initial": initial, "search": search,
+            "perception_calibration": perception_calibration,
             "policy": validation, "budget": budget, "assets": {**assets, **right_assets},
             "calibration": calibration, "validation": validation_samples, "clients": clients,
             "planner_endpoints": planner_endpoints, "observer_endpoints": endpoints, "allowed_ids": ids,
@@ -361,7 +370,8 @@ def build(prepared, store):
     return Calibrator(runners=runners, judges=[Judge(TextRoleClient(c)) for c in prepared["clients"]["judges"]],
         store=store, calibration=prepared["calibration"], validation=prepared["validation"],
         initial=prepared["initial"], search=prepared["search"], validation_policy=prepared["policy"],
-        perception_calibration=config.get("perception_calibration", False),
+        perception_calibration=config.get("perception_calibration", True),
+        condition=config.get("condition", "moha"),
         p_view=prepared["budget"].p_view, allowed_ids=prepared["allowed_ids"],
         resolvers=[ObserverResolver(ProbeRunner(r.service, store), TextRoleClient(c), p_view=prepared["budget"].p_view)
                    for r, c in zip(runners, prepared["clients"]["probe_judges"])])

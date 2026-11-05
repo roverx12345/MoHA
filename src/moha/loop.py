@@ -1,10 +1,10 @@
 """The complete MOHA state machine. Checkpoint after each candidate decision."""
 from __future__ import annotations
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from threading import Lock
-from .catalog import catalog
+from .catalog import catalog, structural_catalog
 from .evaluate import checked, compare
 from .models import Episode, Harness, Sample, ValidationPolicy, check_splits, digest, positive_int
 from .evidence import diagnosis_view
@@ -18,6 +18,8 @@ from .failures import ExecutionFailure, classify_failure
 class SearchPolicy:
     max_rounds: int = 6
     candidates_per_round: int = 2
+    # Legacy config fields retained for loading provenance. Failure profiles and
+    # coverage are descriptive; Algorithm 1 supplies the stopping rules.
     patience: int = 2
     min_diagnosis_coverage: float = 0.5
     max_diagnosis_error_rate: float = 0.2
@@ -38,11 +40,16 @@ class Calibrator:
                  initial: Harness = Harness(), search: SearchPolicy = SearchPolicy(),
                  validation_policy: ValidationPolicy = ValidationPolicy(), p_view: int | None = None,
                  resolvers=None, allowed_ids: list[str] | None = None,
-                 perception_calibration: bool = False):
+                 perception_calibration: bool = True, condition: str = "moha"):
         check_splits(calibration, validation)
         if type(perception_calibration) is not bool:
             raise ValueError("perception_calibration must be boolean")
-        self.perception_calibration = perception_calibration
+        if condition not in {"moha", "initial", "static-all"}:
+            raise ValueError("condition must be moha, initial or static-all")
+        if condition == "static-all" and not perception_calibration:
+            raise ValueError("Static-All requires observer configuration calibration")
+        self.condition = condition
+        self.perception_calibration = perception_calibration and condition != "initial"
         self.runners = tuple(runners)
         if not self.runners or len({id(r) for r in self.runners}) != len(self.runners):
             raise ValueError("each execution lane requires an independent runner")
@@ -61,21 +68,30 @@ class Calibrator:
         all_items = catalog()
         if allowed_ids is not None and set(allowed_ids) - set(all_items):
             raise ValueError("unknown allowed intervention")
-        self.catalog = {k: v for k, v in all_items.items() if (allowed_ids is None or k in allowed_ids)
-                        and not (perception_calibration and v.coordinate.startswith("execution."))}
+        if allowed_ids is not None and set(allowed_ids) - set(structural_catalog()):
+            raise ValueError("structural updates are limited to overview, memory, verification, OCR and ASR")
+        self.catalog = {k: v for k, v in structural_catalog().items()
+                        if allowed_ids is None or k in allowed_ids}
+        if any((initial.overview, initial.memory, initial.verification,
+                initial.retrieval_guard, initial.specialists)) or initial.execution != Harness().execution:
+            raise ValueError("calibration must start from shared Initial-Omni H0")
+        if condition == "static-all":
+            if not {"observer.specialist.ocr", "observer.specialist.asr"} <= set(self.catalog):
+                raise ValueError("Static-All requires both configured OCR and ASR specialists")
+            initial = replace(initial, overview=True, memory=True, verification=True, specialists=("asr", "ocr"))
         # Specialist attribution still checks execution alternatives before
         # proposing a new observer capability. These are probes, not promotions.
         self.execution_probes = [c for c in all_items.values() if c.coordinate.startswith("execution.")]
         identity = {"initial": initial.to_dict(), "search": asdict(search), "validation": asdict(validation_policy),
                     "calibration": [s.id for s in calibration], "heldout": [s.id for s in validation],
                     "catalog": [x.to_dict() for x in self.catalog.values()], "p_view": p_view,
-                    "observer_probes": any(r is not None for r in self.resolvers), "adaptation": "judge_uniform_vote_v1",
+                    "observer_probes": any(r is not None for r in self.resolvers), "adaptation": "paper_two_stage_uniform_vote_v2",
                     "episode_schedule": {"rule": "sample_index_mod_lanes_v1", "lanes": len(self.runners)},
                     "diagnosis_schedule": {"rule": "bounded_trace_workers_v1", "workers": len(self.judges)},
-                    "perception_calibration": perception_calibration}
-        if perception_calibration:
+                    "condition": condition, "perception_calibration": self.perception_calibration,
+                    "specialist_execution_probes": [c.to_dict() for c in self.execution_probes]}
+        if self.perception_calibration:
             identity["perception_grid"] = policy_grid(initial)
-            identity["specialist_execution_probes"] = [c.to_dict() for c in self.execution_probes]
         self.store.write("experiment.json", identity, immutable=True)
         self.state = self.store.read("checkpoint.json") or {
             "round": 0, "attempt": 0, "harness": initial.to_dict(), "history": [],
@@ -160,25 +176,19 @@ class Calibrator:
                 result = judge.diagnose(payload, available)
                 if result.get("status") == "valid" and result.get("failure") == "observer":
                     resolver = self.resolvers[lane]
-                    specialist = "observer.specialist." + str(result.get("failed_capability"))
-                    probe_specialist = any(c.id == specialist for c in available)
-                    if self.perception_calibration and not probe_specialist:
-                        result["observer_resolution"] = {"status": "deferred",
-                            "reason": "sampling policies are evaluated after structural adaptation"}
-                        result.update(candidate_id=None, proposal_reason=result["observer_resolution"]["reason"])
-                    elif resolver is None:
+                    if resolver is None:
                         result["observer_resolution"] = {"status": "unavailable"}
                     else:
-                        probe_candidates = available + self.execution_probes if self.perception_calibration else available
+                        probe_candidates = available + self.execution_probes
                         with self.probe_locks[lane]:
                             result["observer_resolution"] = resolver.resolve(sample, harness, episode, result, probe_candidates)
                         if result["observer_resolution"].get("status") == "error":
                             result["status"] = "error"
-                    if result.get("status") == "valid" and result["observer_resolution"].get("status") != "deferred":
+                    if result.get("status") == "valid":
                         proposal = judge.recommend(payload, result, available)
                         result["observer_proposal"] = proposal
-                        if proposal["status"] == "error":
-                            result["status"] = "error"
+                        if proposal["status"] != "valid":
+                            result.update(status=proposal["status"], candidate_id=None)
                         else:
                             result.update(candidate_id=proposal["candidate_id"], proposal_reason=proposal["proposal_reason"])
                 result["sample_id"] = sample.sample_id
@@ -229,8 +239,10 @@ class Calibrator:
             health = {"failed": len(diagnoses), "valid": valid, "errors": errors,
                       "coverage": valid / len(diagnoses), "error_rate": errors / len(diagnoses)}
             self.store.write(f"health/{harness.id}.json", health)
-            if health["error_rate"] > self.search.max_diagnosis_error_rate or health["coverage"] < self.search.min_diagnosis_coverage:
-                raise RuntimeError("diagnosis health gate failed; inspect health artifacts before validation")
+            # Invalid/unresolved decisions are zero votes, not a convergence
+            # criterion. Provider and runtime failures remain separate errors.
+            if errors:
+                raise RuntimeError("diagnosis infrastructure error; inspect health artifacts before validation")
         return diagnoses
 
     def _save(self):
@@ -244,8 +256,6 @@ class Calibrator:
                           profile_distance=distance,
                           no_progress_rounds=0 if promoted else self.state["no_progress_rounds"] + 1)
         self._save()
-        return (self.state["no_progress_rounds"] >= self.search.patience
-                and distance is not None and distance < self.search.failure_stability)
 
     def run(self) -> dict:
         if self.state["status"] == "completed":
@@ -257,9 +267,12 @@ class Calibrator:
         try:
             if self.state.get("phase") == "perception":
                 return self._finish(self.state["stop_reason"])
+            if self.condition != "moha":
+                return self._finish("fixed_structure")
             while self.state["round"] < self.search.max_rounds:
                 current = Harness.from_dict(self.state["harness"])
-                rejected = {h["candidate"] for h in self.state["history"] if not h["validation"]["accepted"]}
+                rejected = {h["candidate"] for h in self.state["history"]
+                            if h["from"] == current.id and not h["validation"]["accepted"]}
                 available = [c for c in self.catalog.values() if c.id not in rejected and c.available(current, self.p_view)]
                 if not available:
                     return self._finish("catalog_exhausted")
@@ -285,9 +298,7 @@ class Calibrator:
                 self.store.write(slot, selection, immutable=True)
                 candidate_id = selection["candidate_id"]
                 if candidate_id is None:
-                    if self._advance_round(False):
-                        return self._finish("converged")
-                    continue
+                    return self._finish("no_candidate_passed" if self.state["attempt"] else "no_supported_candidate")
                 candidate = self.catalog[candidate_id].apply(current)
                 left, right = [], []
                 for repeat in range(self.validation_policy.repeats):
@@ -302,9 +313,9 @@ class Calibrator:
                 self.state["attempt"] += 1
                 if result["accepted"]:
                     self.state["harness"] = candidate.to_dict()
-                if result["accepted"] or self.state["attempt"] >= self.search.candidates_per_round:
-                    if self._advance_round(result["accepted"]):
-                        return self._finish("converged")
+                    self._advance_round(True)
+                elif self.state["attempt"] >= self.search.candidates_per_round:
+                    return self._finish("no_candidate_passed")
                 self._save()
             return self._finish("round_budget")
         except Exception as exc:

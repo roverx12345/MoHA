@@ -64,7 +64,7 @@ class RoleTests(unittest.TestCase):
     def test_repair_failure_is_not_unresolved_semantics(self):
         client = FakeClient({"failure_label": "observer"}, {"failure_label": "observer"})
         result = Judge(client).diagnose(payload(), list(catalog().values()))
-        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["status"], "invalid")
         self.assertNotIn("failure", result)
 
     def test_network_errors_do_not_trigger_taxonomy_repair(self):
@@ -74,7 +74,7 @@ class RoleTests(unittest.TestCase):
 
     def test_evidence_steps_must_exist(self):
         client = FakeClient(diagnosis(evidence_steps=[999]), diagnosis(evidence_steps=[999]))
-        self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
+        self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "invalid")
 
     def test_schema_distinguishes_recorded_steps_from_event_indices(self):
         trace = payload()
@@ -99,7 +99,7 @@ class RoleTests(unittest.TestCase):
         self.assertEqual(client.requests[0]["schema"]["properties"]["proposal_reason"]["minLength"], 1)
         self.assertIn("candidate_id is null", client.requests[0]["prompt"])
         invalid = diagnosis(proposal_reason=" ")
-        self.assertEqual(Judge(FakeClient(invalid, invalid)).diagnose(payload(), list(catalog().values()))["status"], "error")
+        self.assertEqual(Judge(FakeClient(invalid, invalid)).diagnose(payload(), list(catalog().values()))["status"], "invalid")
 
     def test_no_recorded_steps_allows_only_empty_citations(self):
         client = FakeClient(diagnosis(failure="unresolved", evidence_steps=[], residual_reason="No trace evidence."))
@@ -109,7 +109,7 @@ class RoleTests(unittest.TestCase):
 
     def test_capability_needs_corresponding_typed_request(self):
         client = FakeClient(diagnosis(failed_capability="asr"), diagnosis(failed_capability="asr"))
-        self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
+        self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "invalid")
         self.assertEqual(Judge(FakeClient(diagnosis(failed_capability="ocr"))).diagnose(payload(), list(catalog().values()))["status"], "valid")
 
     def test_no_evidence_trace_still_needs_model_proposal_not_fixed_routing(self):
@@ -123,12 +123,12 @@ class RoleTests(unittest.TestCase):
         for failure in ("observer", "unresolved"):
             invalid = diagnosis(failure=failure, candidate_id="planner.module.memory_basic")
             client = FakeClient(invalid, invalid)
-            self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "error")
+            self.assertEqual(Judge(client).diagnose(payload(), list(catalog().values()))["status"], "invalid")
 
     def test_judge_cannot_invent_or_choose_unavailable_catalog_entry(self):
         for candidate in ("invented", "planner.module.memory_basic", "observer.specialist.ocr"):
             d = diagnosis(failure="verification", candidate_id=candidate)
-            self.assertEqual(Judge(FakeClient(d, d)).diagnose(payload(), [catalog()["planner.module.overview"]])["status"], "error")
+            self.assertEqual(Judge(FakeClient(d, d)).diagnose(payload(), [catalog()["planner.module.overview"]])["status"], "invalid")
 
     def test_observer_specialist_admission_matches_this_trace_and_probe(self):
         available = list(catalog().values())
@@ -265,6 +265,13 @@ class ProbeTests(unittest.TestCase):
     def test_probe_errors_not_capability_failures(self):
         result = self.resolve(FakeProbe(fail=True), FakeClient())
         self.assertEqual(result["status"], "error")
+
+    def test_invalid_probe_judgment_is_inconclusive_after_one_format_repair(self):
+        client = FakeClient({"malformed": "verdict"})
+        result = self.resolve(FakeProbe(), client)
+        self.assertEqual(result["status"], "inconclusive")
+        self.assertTrue(all(v["status"] == "invalid" and len(v["attempts"]) == 2
+                            for v in result["verdicts"]))
 
     def test_no_rescue_requires_known_negative_both_controls(self):
         result = self.resolve(FakeProbe(), FakeClient({"baseline_supports_goal": False, "alternative_supports_goal": False, "reason": "both lack evidence"}))

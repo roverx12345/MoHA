@@ -154,9 +154,9 @@ def main(argv=None):
                       "planner_endpoints": list(prepared["planner_endpoints"]),
                       "diagnosis_workers": len(prepared["clients"]["judges"]),
                       "final_perception_grid": policy_grid(prepared["initial"])
-                          if prepared["config"].get("perception_calibration", False) else None,
+                          if prepared["perception_calibration"] else None,
                       "final_perception_episodes": 9 * len(prepared["validation"]) * prepared["policy"].repeats
-                          if prepared["config"].get("perception_calibration", False) else 0,
+                          if prepared["perception_calibration"] else 0,
                       "observer_media_loading": {
                           "required_media_io_kwargs": media_io_kwargs(prepared["config"])
                               if prepared["budget"].f_view is not None else None,

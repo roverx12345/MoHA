@@ -169,6 +169,8 @@ class ObserverResolver:
             verdicts.append({"candidate_id": candidate_id, **verdict})
             if verdict["status"] == "error":
                 return {"status": "error", "probes": probes, "verdicts": verdicts, "skipped": skipped, "preflight": preflight}
+            if verdict["status"] != "valid":
+                continue  # A malformed verdict cannot establish rescue or no-rescue.
             if verdict["baseline_supports_goal"] is False and verdict["alternative_supports_goal"] is True:
                 return {"status": "execution_rescue", "candidate_id": candidate_id, "goal_type": goal,
                         "probes": probes, "verdicts": verdicts, "skipped": skipped, "preflight": preflight}

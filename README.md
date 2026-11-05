@@ -19,6 +19,8 @@ export PYTHONPATH="$PWD/src:/path/to/pinned-flat/src"
 
 Copy `config.example.json` outside the repository and fill in the media paths, manifests, model endpoints, credentials, and pinned runtime commit.
 
+The paper uses video-disjoint Video-Holmes training splits (64 calibration / 32 validation), six structural rounds, two candidates per round, two validation repeats, and a strict accuracy gain above 0.02. Observer calibration then selects the most accurate of nine FPS/scale configurations. Set `condition` to `moha` (default), `initial` (H0 without adaptation), or `static-all` (all five components followed by the same observer calibration). `perception_calibration=false` is a stage ablation; it is not the full method.
+
 Check the configuration before making model calls:
 
 ```bash

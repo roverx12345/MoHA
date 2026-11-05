@@ -49,8 +49,7 @@ def compare(old_runs: list[list[Episode]], new_runs: list[list[Episode]], sample
             else:
                 old_costs.append(ca)
                 new_costs.append(cb)
-            penalty = 0 if ca is None or cb is None else policy.cost_penalty * (cb - ca) / policy.cost_scale
-            row.append(int(b.correct) - int(a.correct) - penalty)
+            row.append(int(b.correct) - int(a.correct))
         gains.append(row)
     n = len(samples) * policy.repeats
     base = {"old_accuracy": old_correct / n, "new_accuracy": new_correct / n,
@@ -77,14 +76,8 @@ def compare(old_runs: list[list[Episode]], new_runs: list[list[Episode]], sample
     reason = "accepted"
     if old == new:
         reason = "same_configuration"
-    elif policy.max_cost_ratio is not None and new_cost > old_cost * policy.max_cost_ratio + 1e-9:
-        reason = "cost_limit"
-    elif gain <= policy.min_gain:
+    elif base["accuracy_delta"] <= policy.min_gain:
         reason = "insufficient_gain"
-    elif policy.require_positive_interval and low <= 0:
-        reason = "uncertain_gain"
-    elif policy.require_each_repeat_nonnegative and min(repeat_gains) < 0:
-        reason = "inconsistent_repeats"
     return {**base, "accepted": reason == "accepted", "reason": reason, "utility_delta": gain,
             "interval": [low, high], "confidence": policy.confidence,
             "interval_method": "percentile_bootstrap_repeat_and_video_blocks_v1",

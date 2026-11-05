@@ -7,7 +7,7 @@ from .models import Harness, ValidationPolicy
 from .records import numeric, receipts
 
 
-SELECTION_RULE = "max_utility_ties_default_then_cost_then_id_v1"
+SELECTION_RULE = "max_accuracy_ties_default_then_cost_then_id_v2"
 DEFAULT_POLICY = "fps1_scale1"
 
 
@@ -31,15 +31,11 @@ def policy_grid(base: Harness):
 
 
 def select_policy(rows, policy: ValidationPolicy):
-    baseline = next(row for row in rows if row["id"] == DEFAULT_POLICY)
     if any(numeric(row.get(k)) is None for row in rows for k in ("accuracy", "mean_cost")):
         raise ValueError("perception selection requires complete accuracy and measured cost")
-    eligible = [row for row in rows if row["id"] == DEFAULT_POLICY or policy.max_cost_ratio is None
-                or row["mean_cost"] <= baseline["mean_cost"] * policy.max_cost_ratio + 1e-9]
     def rank(row):
-        utility = row["accuracy"] - policy.cost_penalty * row["mean_cost"] / policy.cost_scale
-        return (-utility, row["id"] != DEFAULT_POLICY, row["mean_cost"], row["id"])
-    return min(eligible, key=rank)
+        return (-row["accuracy"], row["id"] != DEFAULT_POLICY, row["mean_cost"], row["id"])
+    return min(rows, key=rank)
 
 
 def execution_summary(runs):

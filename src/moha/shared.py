@@ -67,8 +67,9 @@ def validate_shared_prepared(stacks: dict[str, dict]) -> None:
             "specialist set": prepared["config"].get("specialists", []) == reference["config"].get("specialists", []),
             "OCR backend": prepared["config"].get("image") == reference["config"].get("image"),
             "ASR backend": prepared["config"].get("asr") == reference["config"].get("asr"),
-            "final perception calibration": prepared["config"].get("perception_calibration", False) is True
-                and reference["config"].get("perception_calibration", False) is True,
+            "final perception calibration": prepared["config"].get("perception_calibration", True) is True
+                and reference["config"].get("perception_calibration", True) is True,
+            "condition": prepared["config"].get("condition", "moha") == "moha",
         }
         failed = [name for name, ok in checks.items() if not ok]
         if failed:
@@ -133,12 +134,10 @@ def compare_shared(old_by_stack: dict[str, list[list[Episode]]],
                 cb = numeric(b.usage.get(policy.cost_metric))
                 if ca is None or cb is None:
                     missing_cost = True
-                    penalty = 0
                 else:
                     old_costs.append(ca)
                     new_costs.append(cb)
-                    penalty = policy.cost_penalty * (cb - ca) / policy.cost_scale
-                row.append(int(b.correct) - int(a.correct) - penalty)
+                row.append(int(b.correct) - int(a.correct))
             gains[stack_id].append(row)
     n = len(stack_ids) * len(samples) * policy.repeats
     base = {
@@ -178,14 +177,8 @@ def compare_shared(old_by_stack: dict[str, list[list[Episode]]],
     reason = "accepted"
     if old == new:
         reason = "same_configuration"
-    elif policy.max_cost_ratio is not None and new_cost > old_cost * policy.max_cost_ratio + 1e-9:
-        reason = "cost_limit"
-    elif gain <= policy.min_gain:
+    elif base["accuracy_delta"] <= policy.min_gain:
         reason = "insufficient_gain"
-    elif policy.require_positive_interval and low <= 0:
-        reason = "uncertain_gain"
-    elif policy.require_each_repeat_nonnegative and min(repeat_gains) < 0:
-        reason = "inconsistent_repeats"
     return {**base, "accepted": reason == "accepted", "reason": reason,
             "utility_delta": gain, "interval": [low, high], "confidence": policy.confidence,
             "interval_method": "percentile_bootstrap_repeat_video_and_model_pool_v1",
@@ -327,6 +320,7 @@ class SharedCalibrator:
                 "catalog": calibrator.catalog == self.catalog,
                 "p_view": calibrator.p_view == self.p_view,
                 "perception calibration": calibrator.perception_calibration is True,
+                "condition": calibrator.condition == "moha",
             }
             failed = [name for name, ok in checks.items() if not ok]
             if failed:
@@ -362,8 +356,6 @@ class SharedCalibrator:
                           profile_distance=distance,
                           no_progress_rounds=0 if promoted else self.state["no_progress_rounds"] + 1)
         self._save()
-        return (self.state["no_progress_rounds"] >= self.search.patience
-                and distance is not None and distance < self.search.failure_stability)
 
     def _recommendations(self, current, available):
         diagnoses, by_stack = [], {}
@@ -411,7 +403,7 @@ class SharedCalibrator:
             while self.state["round"] < self.search.max_rounds:
                 current = Harness.from_dict(self.state["harness"])
                 rejected = {entry["candidate"] for entry in self.state["history"]
-                            if not entry["validation"]["accepted"]}
+                            if entry["from"] == current.id and not entry["validation"]["accepted"]}
                 available = [item for item in self.catalog.values()
                              if item.id not in rejected and item.available(current, self.p_view)]
                 if not available:
@@ -438,9 +430,7 @@ class SharedCalibrator:
                 self.store.write(slot, selection, immutable=True)
                 candidate_id = selection["candidate_id"]
                 if candidate_id is None:
-                    if self._advance_round(False):
-                        return self._finish("converged")
-                    continue
+                    return self._finish("no_candidate_passed" if self.state["attempt"] else "no_supported_candidate")
                 candidate = self.catalog[candidate_id].apply(current)
                 result = self._validate(current, candidate)
                 self.state["history"].append({"round": self.state["round"], "candidate": candidate_id,
@@ -448,9 +438,9 @@ class SharedCalibrator:
                 self.state["attempt"] += 1
                 if result["accepted"]:
                     self.state["harness"] = candidate.to_dict()
-                if result["accepted"] or self.state["attempt"] >= self.search.candidates_per_round:
-                    if self._advance_round(result["accepted"]):
-                        return self._finish("converged")
+                    self._advance_round(True)
+                elif self.state["attempt"] >= self.search.candidates_per_round:
+                    return self._finish("no_candidate_passed")
                 self._save()
             return self._finish("round_budget")
         except Exception as exc:

@@ -33,7 +33,7 @@ class SharedComparisonTests(unittest.TestCase):
             "b": [runs(samples, new, ["B"] * 4)],
         }
         result = compare_shared(left, right, samples, old, new,
-                                ValidationPolicy(bootstrap_samples=30))
+                                ValidationPolicy(repeats=1, bootstrap_samples=30))
         self.assertEqual(result["aggregation"], AGGREGATION_RULE)
         self.assertEqual(result["episode_count"], 8)
         self.assertEqual(result["accuracy_delta"], 0)
@@ -48,7 +48,7 @@ class SharedComparisonTests(unittest.TestCase):
         right = {"a": [runs(samples, new, ["A"])], "b": [runs(samples, new, ["A"])]}
         right["b"][0][0].usage = {}
         result = compare_shared(left, right, samples, old, new,
-                                ValidationPolicy(bootstrap_samples=10))
+                                ValidationPolicy(repeats=1, bootstrap_samples=10))
         self.assertEqual(result["reason"], "missing_measured_cost")
         self.assertFalse(result["accepted"])
 
@@ -77,7 +77,7 @@ class SharedLoopTests(unittest.TestCase):
         self.assertEqual(len(result["history"]), 1)
         self.assertEqual(result["history"][0]["validation"]["stack_count"], 2)
         self.assertEqual(result["perception_calibration"]["selected_policy_id"], "fps1_scale1")
-        self.assertEqual(result["perception_calibration"]["rows"][0]["episodes"], 4)
+        self.assertEqual(result["perception_calibration"]["rows"][0]["episodes"], 8)
         self.assertEqual(frozen["schema"], "moha_shared_frozen_v1")
         self.assertEqual(frozen["stack_ids"], ["model-a", "model-b"])
         self.assertTrue((self.root / "models/model-a/episodes").is_dir())
@@ -87,6 +87,37 @@ class SharedLoopTests(unittest.TestCase):
         with RunStore(self.root, {}) as store:
             with self.assertRaises(ValueError):
                 NamespacedStore(store, "../outside")
+
+    def test_shared_search_stops_on_no_support_or_two_rejections_and_rechecks_after_promotion(self):
+        from moha.evidence import unpack
+        for scenario in ("no_support", "two_rejections", "changed_structure"):
+            class Votes:
+                def diagnose(self, payload, available):
+                    candidate = "memory_basic" if unpack(payload)["sample_id"] == "cal1" else "overview"
+                    return {"status": "valid", "failure": "orientation", "candidate_id":
+                            None if scenario == "no_support" else "planner.module." + candidate}
+            class Runner(DemoRunner):
+                def run(self, h, s, repeat):
+                    e = super().run(h, s, repeat)
+                    win = (scenario == "changed_structure" and s.sample_id.startswith("val")
+                           and h.overview and (s.sample_id == "val0" or h.memory))
+                    e.answer = "A" if win else "B"
+                    return e
+            with self.subTest(scenario=scenario), RunStore(self.root / scenario, {}) as store:
+                calibrators = {name: Calibrator(runners=[Runner()], judges=[Votes()],
+                    store=NamespacedStore(store, f"models/{name}"),
+                    calibration=[sample("cal1"), sample("cal2")],
+                    validation=[sample("val0"), sample("val1")],
+                    validation_policy=ValidationPolicy(bootstrap_samples=10)) for name in ("a", "b")}
+                result = SharedCalibrator(calibrators=calibrators, store=store).run()
+                decisions = [row["validation"]["accepted"] for row in result["history"]]
+                self.assertEqual(decisions, {"no_support": [], "two_rejections": [False, False],
+                                            "changed_structure": [False, True, True]}[scenario])
+                if scenario != "changed_structure":
+                    self.assertEqual(result["round"], 0)
+                    self.assertEqual(result["stop_reason"], "no_supported_candidate" if scenario == "no_support"
+                                     else "no_candidate_passed")
+                self.assertEqual(len(result["perception_calibration"]["rows"]), 9)
 
     def test_shared_supervisor_preserves_ordered_stack_arguments(self):
         output, state = self.root, Path(self.tmp.name) / "supervisor"

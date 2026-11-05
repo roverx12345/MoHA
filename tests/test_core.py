@@ -28,6 +28,13 @@ class ContractTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ValidationPolicy(**kwargs)
 
+    def test_paper_validation_defaults_and_no_alternative_promotion_gates(self):
+        self.assertEqual((ValidationPolicy().repeats, ValidationPolicy().min_gain), (2, 0.02))
+        for kwargs in ({"max_cost_ratio": 1}, {"cost_penalty": 0.1},
+                       {"require_positive_interval": True}, {"require_each_repeat_nonnegative": True}):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, "accuracy only"):
+                ValidationPolicy(**kwargs)
+
     def test_video_split_not_question_split(self):
         with self.assertRaises(ValueError):
             check_splits([sample("one")], [replace(sample("two"), video_id="one")])
@@ -90,9 +97,8 @@ class ValidationTests(unittest.TestCase):
     def test_paper_gate_strict_margin_and_matched_cap_not_same_spend(self):
         old = self.runs(self.old, ["B"] * 8)
         new = self.runs(self.new, ["A"] * 8, 200)
-        self.assertTrue(compare(old, new, self.samples, self.old, self.new, ValidationPolicy())['accepted'])
-        self.assertFalse(compare(old, new, self.samples, self.old, self.new, ValidationPolicy(min_gain=1))['accepted'])
-        self.assertEqual(compare(old, new, self.samples, self.old, self.new, ValidationPolicy(max_cost_ratio=1))['reason'], 'cost_limit')
+        self.assertTrue(compare(old, new, self.samples, self.old, self.new, ValidationPolicy(repeats=1))['accepted'])
+        self.assertFalse(compare(old, new, self.samples, self.old, self.new, ValidationPolicy(repeats=1, min_gain=1))['accepted'])
 
     def test_complete_pair_identity_is_required(self):
         data = self.runs(self.old, ["B"] * 8)[0]
@@ -105,13 +111,13 @@ class ValidationTests(unittest.TestCase):
     def test_missing_cost_cannot_promote(self):
         old, new = self.runs(self.old, ["B"] * 8), self.runs(self.new, ["A"] * 8)
         new[0][0].usage = {}
-        self.assertEqual(compare(old, new, self.samples, self.old, self.new, ValidationPolicy())["reason"], "missing_measured_cost")
+        self.assertEqual(compare(old, new, self.samples, self.old, self.new, ValidationPolicy(repeats=1))["reason"], "missing_measured_cost")
 
     def test_invalid_final_answer_is_incorrect_with_its_full_measured_cost(self):
         old = self.runs(self.old, ["A"] * 8)
         new = self.runs(self.new, ["A"] * 8)
         new[0][0] = replace(new[0][0], status="invalid_final_answer", usage={"video_tokens": 900})
-        verdict = compare(old, new, self.samples, self.old, self.new, ValidationPolicy())
+        verdict = compare(old, new, self.samples, self.old, self.new, ValidationPolicy(repeats=1))
         self.assertEqual(verdict["new_accuracy"], 7 / 8)
         self.assertEqual(verdict["new_cost"], 200)
         self.assertEqual(verdict["paired"]["correct_to_wrong"], 1)
@@ -120,19 +126,20 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(status=status), self.assertRaises(ValueError):
                 checked([replace(new[0][0], status=status)] + new[0][1:], self.samples, self.new, 0)
 
-    def test_optional_repeats_gate_detects_regression(self):
+    def test_repeat_regression_does_not_override_the_pooled_accuracy_gate(self):
         old = self.runs(self.old, [["A"] * 8, ["B"] * 8, ["B"] * 8], repeats=3)
         new = self.runs(self.new, [["B"] * 8, ["A"] * 8, ["A"] * 8], repeats=3)
-        policy = ValidationPolicy(repeats=3, require_each_repeat_nonnegative=True)
+        policy = ValidationPolicy(repeats=3)
         verdict = compare(old, new, self.samples, self.old, self.new, policy)
-        self.assertEqual(verdict["reason"], "inconsistent_repeats")
+        self.assertTrue(verdict["accepted"])
         self.assertEqual(verdict["paired"]["wrong_to_correct"], 16)
         self.assertEqual(verdict["paired"]["correct_to_wrong"], 8)
 
-    def test_optional_confidence_gate(self):
+    def test_confidence_interval_is_descriptive_not_a_promotion_gate(self):
         old, new = self.runs(self.old, ["B"] * 8), self.runs(self.new, ["A"] + ["B"] * 7)
-        result = compare(old, new, self.samples, self.old, self.new, ValidationPolicy(require_positive_interval=True))
-        self.assertEqual(result["reason"], "uncertain_gain")
+        result = compare(old, new, self.samples, self.old, self.new, ValidationPolicy(repeats=1))
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["interval"][0], 0)
 
 
 class StoreAndLoopTests(unittest.TestCase):
@@ -144,7 +151,8 @@ class StoreAndLoopTests(unittest.TestCase):
     def loop(self, store, **kwargs):
         params = dict(runners=[DemoRunner()], judges=[kwargs.pop("judge", DemoJudge())], store=store,
                       calibration=[sample("cal")], validation=[sample("val")],
-                      validation_policy=ValidationPolicy(bootstrap_samples=30))
+                      validation_policy=ValidationPolicy(repeats=1, bootstrap_samples=30),
+                      perception_calibration=False)
         params.update(kwargs)
         return Calibrator(**params)
 
@@ -211,15 +219,15 @@ class StoreAndLoopTests(unittest.TestCase):
                 self.loop(store, judge=Invalid()).run()
             self.assertEqual(len(list((self.root / "episodes").glob("*.json"))), 1)
 
-    def test_abstention_needs_patience_and_stable_profile(self):
+    def test_abstention_stops_immediately_without_failure_profile_convergence(self):
         class Abstains(DemoJudge):
             def diagnose(self, *args):
                 return {**super().diagnose(*args), "candidate_id": None, "proposal_reason": "uncertain"}
         with RunStore(self.root, {}) as store:
             result = self.loop(store, judge=Abstains()).run()
-        self.assertEqual(result["stop_reason"], "converged")
-        self.assertEqual(result["round"], 2)
-        self.assertEqual(result["profile_distance"], 0)
+        self.assertEqual(result["stop_reason"], "no_supported_candidate")
+        self.assertEqual(result["round"], 0)
+        self.assertEqual(len(list((self.root / "recommendations").glob("*.json"))), 1)
 
     def test_changing_failure_profile_is_not_convergence(self):
         class Alternates:
@@ -229,7 +237,39 @@ class StoreAndLoopTests(unittest.TestCase):
                 return {"status": "valid", "failure": "orientation" if self.n % 2 else "retrieval", "candidate_id": None}
         with RunStore(self.root, {}) as store:
             result = self.loop(store, judge=Alternates(), search=SearchPolicy(max_rounds=3)).run()
-        self.assertEqual(result["stop_reason"], "round_budget")
+        self.assertEqual(result["stop_reason"], "no_supported_candidate")
+
+    def test_invalid_and_unresolved_diagnoses_are_zero_votes(self):
+        class NoVote:
+            def diagnose(self, payload, available):
+                from moha.evidence import unpack
+                return ({"status": "invalid"} if unpack(payload)["sample_id"] == "cal1" else
+                        {"status": "valid", "failure": "unresolved", "candidate_id": None})
+        with RunStore(self.root, {}) as store:
+            result = self.loop(store, judge=NoVote(), calibration=[sample("cal1"), sample("cal2")]).run()
+            self.assertEqual(result["stop_reason"], "no_supported_candidate")
+            self.assertEqual(result["history"], [])
+            self.assertEqual(store.read("selections/000-00.json")["eligible_votes"], 0)
+
+    def test_two_failed_candidates_end_search_before_a_third_supported_candidate(self):
+        class Votes:
+            def diagnose(self, payload, available):
+                from moha.evidence import unpack
+                candidate = {"cal1": "memory_basic", "cal2": "overview", "cal3": "verification_basic"}
+                return {"status": "valid", "failure": "orientation",
+                        "candidate_id": "planner.module." + candidate[unpack(payload)["sample_id"]]}
+        class NoGain(DemoRunner):
+            def run(self, h, s, repeat):
+                e = super().run(h, s, repeat)
+                e.answer = "B"  # All candidates fail the paired gate.
+                return e
+        with RunStore(self.root, {}) as store:
+            result = self.loop(store, judge=Votes(), runners=[NoGain()],
+                calibration=[sample(f"cal{i}") for i in (1, 2, 3)]).run()
+        self.assertEqual(result["stop_reason"], "no_candidate_passed")
+        self.assertEqual(result["round"], 0)
+        self.assertEqual([row["candidate"] for row in result["history"]],
+                         ["planner.module.memory_basic", "planner.module.overview"])
 
     def test_rejection_uses_next_rank_without_rejudging_then_refreshes_after_promotion(self):
         from moha.evidence import unpack
@@ -252,8 +292,8 @@ class StoreAndLoopTests(unittest.TestCase):
                                calibration=[sample("cal1"), sample("cal2")],
                                search=SearchPolicy(max_rounds=2)).run()
         self.assertEqual([h["candidate"] for h in result["history"]],
-                         ["planner.module.memory_basic", "planner.module.overview"])
-        self.assertEqual([h["validation"]["accepted"] for h in result["history"]], [False, True])
+                         ["planner.module.memory_basic", "planner.module.overview", "planner.module.memory_basic"])
+        self.assertEqual([h["validation"]["accepted"] for h in result["history"]], [False, True, False])
         self.assertEqual(judge.calls, [("cal1", False), ("cal2", False), ("cal1", True), ("cal2", True)])
 
     def test_observer_probe_precedes_final_proposal_and_never_sees_validation(self):
